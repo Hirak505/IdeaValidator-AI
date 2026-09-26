@@ -86,13 +86,49 @@ function ScoreRing({ score, config }) {
   )
 }
 
+const evidenceTypeLabel = {
+  documented_fact: { label: 'DOCF', cls: 'bg-green-500/15 text-green-400' },
+  supported_inference: { label: 'SUP-INF', cls: 'bg-blue-500/15 text-blue-400' },
+  not_documented: { label: 'N/D', cls: 'bg-gray-500/15 text-gray-400' },
+  requires_verification: { label: 'RV', cls: 'bg-orange-500/15 text-orange-400' },
+  unsupported_claim: { label: 'UC', cls: 'bg-red-500/15 text-red-400' },
+  not_verified: { label: 'N/V', cls: 'bg-slate-500/15 text-slate-400' },
+  project: { label: 'PROJ', cls: 'bg-cyan-500/15 text-cyan-400' },
+  uploaded_document: { label: 'DOC', cls: 'bg-brand-500/15 text-brand-300' },
+  inference: { label: 'INFER', cls: 'bg-amber-500/15 text-amber-300' },
+  external: { label: 'EXT', cls: 'bg-emerald-500/15 text-emerald-300' },
+};
+
 export default function ScoreCard({ type, data }) {
+  const [showFindings, setShowFindings] = useState(false)
   const config = judgeConfig[type]
   if (!config || !data) return null
+
+  const hasFindings = data.key_findings?.length > 0 &&
+    !(data.key_findings.length === 1 && data.key_findings[0]?.evidence_type === 'not_verified' &&
+      data.key_findings[0]?.finding?.startsWith('General '))
 
   return (
     <div className={`rounded-2xl border ${config.borderColor} bg-surface-900 p-5 transition-all hover:shadow-lg ${config.glowColor} animate-slide-up`}>
       <ScoreRing score={data.score} config={config} />
+
+      {/* Confidence & Evidence Quality */}
+      {(data.confidence != null || data.evidence_quality != null) && (
+        <div className="flex gap-2 mb-4">
+          {data.confidence != null && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-800 border border-slate-700/50">
+              <span className="text-[10px] text-slate-500 uppercase">Conf</span>
+              <span className="text-xs font-semibold text-slate-300">{data.confidence}%</span>
+            </div>
+          )}
+          {data.evidence_quality != null && (
+            <div className="flex items-center gap-1.5 px-2 py-1 rounded-md bg-surface-800 border border-slate-700/50">
+              <span className="text-[10px] text-slate-500 uppercase">Evid</span>
+              <span className="text-xs font-semibold text-slate-300">{data.evidence_quality}%</span>
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Comment */}
       <p className="text-sm text-slate-400 leading-relaxed mb-4 border-l-2 border-slate-700 pl-3 italic">
@@ -126,6 +162,42 @@ export default function ScoreCard({ type, data }) {
               </li>
             ))}
           </ul>
+        </div>
+      )}
+
+      {/* Key Findings (collapsible) */}
+      {hasFindings && (
+        <div className="mt-3 pt-3 border-t border-slate-800">
+          <button
+            onClick={() => setShowFindings(!showFindings)}
+            className="flex items-center gap-1.5 text-[10px] font-medium text-slate-500 uppercase tracking-widest mb-2 hover:text-slate-400 transition-colors w-full text-left"
+          >
+            <span className={`transform transition-transform duration-200 ${showFindings ? 'rotate-90' : ''}`}>▸</span>
+            Evidence ({data.key_findings.length})
+          </button>
+          {showFindings && (
+            <ul className="space-y-2.5">
+              {data.key_findings.map((f, i) => {
+                const badge = evidenceTypeLabel[f.evidence_type] || evidenceTypeLabel.not_verified
+                return (
+                  <li key={i} className="text-xs">
+                    <div className="flex items-start gap-2">
+                      <span className={`flex-shrink-0 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase mt-0.5 ${badge.cls}`}>
+                        {badge.label}
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-slate-300 leading-relaxed">{f.finding}</p>
+                        <p className="text-slate-500 mt-0.5">↳ {f.evidence}</p>
+                        {f.source && f.source !== 'N/A' && (
+                          <p className="text-slate-600 text-[10px] mt-0.5">Source: {f.source}</p>
+                        )}
+                      </div>
+                    </div>
+                  </li>
+                )
+              })}
+            </ul>
+          )}
         </div>
       )}
     </div>

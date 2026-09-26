@@ -5,6 +5,8 @@ import ScoreCard from './components/ScoreCard'
 import OverallScore from './components/OverallScore'
 import JudgeQuestions from './components/JudgeQuestions'
 import RadarChart from './components/RadarChart'
+import ConsensusCard from './components/ConsensusCard'
+import DifferentiationCard from './components/DifferentiationCard'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
@@ -48,6 +50,8 @@ function markdownList(items) {
 
 function buildMarkdownReport(results, attackMode) {
   const chief = results.chief_judge || {}
+  const consensus = results.consensus || {}
+  const diff = chief.differentiation || {}
   const judgeLabels = {
     innovation: 'Innovation',
     technical: 'Technical',
@@ -55,47 +59,58 @@ function buildMarkdownReport(results, attackMode) {
     presentation: 'Presentation',
   }
 
+  // Build specialist reports with evidence
   const specialistReports = Object.entries(judgeLabels).map(([type, label]) => {
     const report = results[type] || {}
-    return `## ${label} Judge
+    const confLine = report.confidence != null ? ` | **Confidence:** ${report.confidence}%` : ''
+    const evidLine = report.evidence_quality != null ? ` | **Evidence Quality:** ${report.evidence_quality}%` : ''
 
-**Score:** ${report.score ?? 'N/A'}/10
+    let findingsSection = ''
+    if (report.key_findings?.length > 0) {
+      const findingLines = report.key_findings.map(f =>
+        `- **[${(f.evidence_type || 'N/A').toUpperCase()}]** ${f.finding}\n  Evidence: ${f.evidence || 'Not directly verified'}${f.source && f.source !== 'N/A' ? ` (Source: ${f.source})` : ''}`
+      ).join('\n')
+      findingsSection = `\n\n### Key Findings\n${findingLines}`
+    }
 
-**Comments:** ${report.comments || 'None provided'}
-
-### Strengths
-${markdownList(report.strengths)}
-
-### Weaknesses
-${markdownList(report.weaknesses)}`
+    return `## ${label} Judge\n\n**Score:** ${report.score ?? 'N/A'}/10${confLine}${evidLine}\n\n**Comments:** ${report.comments || 'None provided'}\n\n### Strengths\n${markdownList(report.strengths)}\n\n### Weaknesses\n${markdownList(report.weaknesses)}${findingsSection}`
   }).join('\n\n')
 
-  return `# IdeaValidator AI Report
+  // Build consensus section
+  let consensusSection = ''
+  if (consensus.mean != null) {
+    consensusSection = `\n## Judge Consensus\n\n**Agreement Level:** ${consensus.agreement_level || 'N/A'}\n**Score Spread:** ${consensus.spread} points (${consensus.min} – ${consensus.max})\n**Most Aligned:** ${judgeLabels[consensus.most_aligned] || consensus.most_aligned}\n**Largest Disagreement:** ${judgeLabels[consensus.largest_disagreement] || consensus.largest_disagreement}\n`
+  }
 
-Generated: ${new Date().toISOString().slice(0, 10)}
-Judge Attack Mode: ${attackMode ? 'Enabled' : 'Disabled'}
+  // Build differentiation section
+  let diffSection = ''
+  if (diff.solution_category && diff.solution_category !== 'Not determined') {
+    diffSection = `\n## Differentiation Analysis\n\n**Category:** ${diff.solution_category}\n`
+    if (diff.differentiation_strengths?.[0] !== 'Not determined') diffSection += `\n**Strengths:**\n${markdownList(diff.differentiation_strengths)}\n`
+    if (diff.differentiation_gaps?.[0] !== 'Not determined') diffSection += `\n**Gaps:**\n${markdownList(diff.differentiation_gaps)}\n`
+    if (diff.unsupported_claims?.length > 0) diffSection += `\n**Unsupported Claims:**\n${markdownList(diff.unsupported_claims)}\n`
+    if (diff.limitation_note) diffSection += `\n*${diff.limitation_note}*\n`
+  }
 
-## Final Verdict
+  // Build prioritized roadmap
+  let roadmapSection = ''
+  if (chief.prioritized_roadmap?.length > 0) {
+    const rows = chief.prioritized_roadmap.map(r =>
+      `| ${r.priority} | ${r.title} | ${r.reason || '—'} | ${r.impact} | ${r.effort} |`
+    ).join('\n')
+    roadmapSection = `\n## Prioritized Roadmap\n\n| Priority | Action | Reason | Impact | Effort |\n|----------|--------|--------|--------|--------|\n${rows}\n`
+  } else {
+    const items = (chief.improvement_roadmap || []).map((step, index) => `${index + 1}. ${step}`).join('\n')
+    roadmapSection = `\n### Improvement Roadmap\n${items || '1. None provided'}\n`
+  }
 
-**Overall Score:** ${chief.overall_score ?? 'N/A'}/10
+  // Confidence line
+  const confEvid = []
+  if (chief.confidence != null) confEvid.push(`**Confidence:** ${chief.confidence}%`)
+  if (chief.evidence_quality != null) confEvid.push(`**Evidence Quality:** ${chief.evidence_quality}%`)
+  const confEvidLine = confEvid.length > 0 ? confEvid.join(' | ') + '\n' : ''
 
-${chief.final_verdict || 'None provided'}
-
-### Top Strengths
-${markdownList(chief.top_strengths)}
-
-### Key Improvements
-${markdownList(chief.top_improvements)}
-
-### Improvement Roadmap
-${(chief.improvement_roadmap || []).map((step, index) => `${index + 1}. ${step}`).join('\n') || '1. None provided'}
-
-## Questions For The Team
-
-${markdownList(chief.judge_questions)}
-
-${specialistReports}
-`
+  return `# IdeaValidator AI Report\n\nGenerated: ${new Date().toISOString().slice(0, 10)}\nJudge Attack Mode: ${attackMode ? 'Enabled' : 'Disabled'}\n\n## Final Verdict\n\n**Overall Score:** ${chief.overall_score ?? 'N/A'}/10\n${confEvidLine}\n${chief.final_verdict || 'None provided'}\n\n### Top Strengths\n${markdownList(chief.top_strengths)}\n\n### Key Improvements\n${markdownList(chief.top_improvements)}\n${roadmapSection}${consensusSection}${diffSection}\n## Questions For The Team\n\n${markdownList(chief.judge_questions)}\n\n${specialistReports}\n`
 }
 
 function Toggle({ enabled, onToggle, label, sublabel }) {
@@ -245,7 +260,7 @@ export default function App() {
             <OverallScore data={results.chief_judge} attackMode={attackMode} />
           </div>
 
-          {/* Radar + Questions */}
+          {/* Radar + Consensus */}
           <div className="grid sm:grid-cols-2 gap-4 mb-6">
             <RadarChart scores={{
               innovation: results.innovation?.score,
@@ -253,6 +268,12 @@ export default function App() {
               business: results.business?.score,
               presentation: results.presentation?.score,
             }} />
+            <ConsensusCard consensus={results.consensus} />
+          </div>
+
+          {/* Differentiation + Questions */}
+          <div className="grid sm:grid-cols-2 gap-4 mb-6">
+            <DifferentiationCard data={results.chief_judge?.differentiation} />
             <JudgeQuestions
               questions={results.chief_judge?.judge_questions}
               attackMode={attackMode}
@@ -279,7 +300,7 @@ export default function App() {
               Download Markdown
             </button>
             <p className="text-right text-xs text-slate-700">
-              IdeaValidator AI · Evaluation powered by Gemini 1.5 Flash
+              IdeaValidator AI · Evidence-grounded evaluation powered by Gemini
             </p>
           </div>
         </div>
