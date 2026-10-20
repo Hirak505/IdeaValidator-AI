@@ -11,6 +11,7 @@ from prompts import (
 from gemini_service import call_judge
 import json
 import re
+from typing import Optional
 
 
 VALID_EVIDENCE_TYPES = {"documented_fact", "supported_inference", "not_documented", "requires_verification", "unsupported_claim", "not_verified"}
@@ -353,8 +354,11 @@ def calculate_consensus(innovation: dict, technical: dict, business: dict, prese
     }
 
 
-async def run_innovation_judge(project_context: str) -> dict:
-    prompt = INNOVATION_JUDGE_PROMPT.format(project_context=project_context)
+async def run_innovation_judge(project_context: str, external_research: Optional[str] = None) -> dict:
+    prompt = INNOVATION_JUDGE_PROMPT.format(
+        project_context=project_context,
+        external_research=external_research or "",
+    )
     result = await call_judge(prompt, "Innovation Judge")
     return _validate_judge_result(result, "innovation", project_context=project_context)
 
@@ -365,8 +369,11 @@ async def run_technical_judge(project_context: str) -> dict:
     return _validate_judge_result(result, "technical", project_context=project_context)
 
 
-async def run_business_judge(project_context: str) -> dict:
-    prompt = BUSINESS_JUDGE_PROMPT.format(project_context=project_context)
+async def run_business_judge(project_context: str, external_research: Optional[str] = None) -> dict:
+    prompt = BUSINESS_JUDGE_PROMPT.format(
+        project_context=project_context,
+        external_research=external_research or "",
+    )
     result = await call_judge(prompt, "Business Judge")
     return _validate_judge_result(result, "business", project_context=project_context)
 
@@ -385,6 +392,7 @@ async def run_chief_judge(
     presentation: dict,
     attack_mode: bool = False,
     consensus: dict = None,
+    external_research: Optional[str] = None,
 ) -> dict:
     attack_instructions = ATTACK_MODE_INSTRUCTIONS if attack_mode else NORMAL_MODE_INSTRUCTIONS
     attack_mode_label = "ENABLED - Be adversarial and critical" if attack_mode else "DISABLED - Be constructive"
@@ -412,17 +420,28 @@ async def run_chief_judge(
         attack_mode=attack_mode_label,
         attack_instructions=attack_instructions,
         consensus_data=consensus_data,
+        external_research=external_research or "",
     )
     result = await call_judge(prompt, "Chief Judge")
     return _validate_chief_result(result)
 
 
-async def run_all_judges(project_context: str, attack_mode: bool = False) -> dict:
-    """Run all four specialist judges in parallel with safe sibling cancellation, then chief judge."""
+async def run_all_judges(
+    project_context: str,
+    attack_mode: bool = False,
+    external_research: Optional[str] = None,
+) -> dict:
+    """Run all four specialist judges in parallel with safe sibling cancellation, then chief judge.
+
+    external_research: optional pre-formatted external market research block (from research.py).
+    When None, evaluation proceeds normally without any external research context.
+    """
+    research_block = external_research or ""
+
     specialist_tasks = [
-        asyncio.create_task(run_innovation_judge(project_context)),
+        asyncio.create_task(run_innovation_judge(project_context, external_research=research_block)),
         asyncio.create_task(run_technical_judge(project_context)),
-        asyncio.create_task(run_business_judge(project_context)),
+        asyncio.create_task(run_business_judge(project_context, external_research=research_block)),
         asyncio.create_task(run_presentation_judge(project_context)),
     ]
 
@@ -441,10 +460,12 @@ async def run_all_judges(project_context: str, attack_mode: bool = False) -> dic
 
     # Chief judge synthesizes all results
     chief = await run_chief_judge(
-        project_context, innovation, technical, business, presentation, attack_mode, consensus
+        project_context, innovation, technical, business, presentation,
+        attack_mode, consensus,
+        external_research=research_block,
     )
 
-    return {
+    result = {
         "innovation": innovation,
         "technical": technical,
         "business": business,
@@ -452,3 +473,6 @@ async def run_all_judges(project_context: str, attack_mode: bool = False) -> dic
         "chief_judge": chief,
         "consensus": consensus,
     }
+    if external_research:
+        result["research_assisted"] = True
+    return result

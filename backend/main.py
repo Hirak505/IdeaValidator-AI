@@ -5,6 +5,7 @@ from contextlib import asynccontextmanager
 from typing import Optional
 from collections import defaultdict
 import aiofiles
+import json
 import os
 import time
 
@@ -12,6 +13,7 @@ from file_parser import parse_uploaded_file, build_project_context
 from judges import run_all_judges
 from gemini_service import verify_environment
 from utils import get_temp_path, cleanup_files, cleanup_stale_temp_files
+import research as research_module
 
 # Maximum file size allowed: 20MB
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
@@ -204,6 +206,7 @@ async def evaluate_project(
     pitch_deck: Optional[UploadFile] = File(None),
     readme: Optional[UploadFile] = File(None),
     attack_mode: bool = Form(False),
+    research_request_id: Optional[str] = Form(None),
 ):
     # Enforce Rate Limiting: max 5 requests per minute per IP
     client_ip = get_client_ip(request)
@@ -256,9 +259,22 @@ async def evaluate_project(
         except ValueError as e:
             raise HTTPException(status_code=422, detail=str(e))
 
+        # Resolve optional Mythos research linked to this idea and request ID
+        external_research_block = None
+        if research_request_id and research_request_id.strip():
+            imported = research_module.get_imported_research(
+                research_request_id.strip(), project_context
+            )
+            if imported:
+                external_research_block = research_module.format_research_for_prompt(imported)
+
         # Run AI judges
         try:
-            results = await run_all_judges(project_context, attack_mode=attack_mode)
+            results = await run_all_judges(
+                project_context,
+                attack_mode=attack_mode,
+                external_research=external_research_block,
+            )
         except TimeoutError:
             raise HTTPException(status_code=504, detail="AI evaluation timed out. Please try again.")
         except EnvironmentError:
@@ -271,6 +287,169 @@ async def evaluate_project(
     finally:
         # Always clean up temporary uploaded files, even on exceptions
         cleanup_files(*temp_paths)
+
+
+@app.post("/research/request")
+async def create_research_request(
+    request: Request,
+    pitch_deck: Optional[UploadFile] = File(None),
+    readme: Optional[UploadFile] = File(None),
+):
+    """
+    Create a new Mythos research request bound to the submitted idea.
+
+    Returns:
+    - request_id: include in Mythos research prompt
+    - auth_token: keep client-side ONLY; never share in the research prompt; required to import research
+    - expires_in: seconds until this request expires
+    - research_prompt: copyable Mythos prompt (request_id embedded, auth_token excluded)
+    """
+    client_ip = get_client_ip(request)
+    allowed, retry_after = check_rate_limit(client_ip)
+    if not allowed:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Rate limit exceeded. Please wait before creating another research request."},
+            headers={"Retry-After": str(retry_after)},
+        )
+
+    if not pitch_deck and not readme:
+        raise HTTPException(
+            status_code=400,
+            detail="Please upload at least one file to create a research request.",
+        )
+
+    temp_paths = []
+    parsed_files = []
+
+    try:
+        if pitch_deck and pitch_deck.filename:
+            temp_path = get_temp_path(pitch_deck.filename)
+            temp_paths.append(temp_path)
+            await _save_upload_safely(pitch_deck, temp_path)
+            try:
+                parsed_files.append(parse_uploaded_file(temp_path, pitch_deck.filename))
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+
+        if readme and readme.filename:
+            temp_path = get_temp_path(readme.filename)
+            temp_paths.append(temp_path)
+            await _save_upload_safely(readme, temp_path)
+            try:
+                parsed_files.append(parse_uploaded_file(temp_path, readme.filename))
+            except ValueError as e:
+                raise HTTPException(status_code=422, detail=str(e))
+
+        try:
+            project_context = build_project_context(parsed_files)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+
+        try:
+            req = research_module.create_research_request(project_context)
+        except RuntimeError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+
+        # Build a short idea summary for the Mythos prompt (first 1500 chars of context)
+        idea_summary = project_context[:1500]
+        research_prompt = research_module.build_mythos_research_prompt(
+            req["request_id"], idea_summary
+        )
+
+        return JSONResponse(content={
+            "request_id": req["request_id"],
+            "auth_token": req["auth_token"],  # raw token — client must store this securely
+            "expires_in": req["expires_in"],
+            "research_prompt": research_prompt,
+        })
+
+    finally:
+        cleanup_files(*temp_paths)
+
+
+@app.post("/research/import")
+async def import_research(
+    request: Request,
+    request_id: str = Form(...),
+    research_json: str = Form(...),
+):
+    """
+    Import Mythos research JSON for an existing pending request.
+
+    Requires Authorization: Bearer <auth_token> header.
+    The auth_token was returned when the research request was created.
+    This endpoint is single-use: duplicate imports are rejected.
+
+    The research_json must conform to schema_version 1.0.
+    All imported fields are treated as untrusted external data.
+    """
+    # Extract bearer token
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(
+            status_code=401,
+            detail="Authorization header with Bearer token is required.",
+        )
+    raw_token = auth_header[len("Bearer "):].strip()
+    if not raw_token:
+        raise HTTPException(status_code=401, detail="Bearer token is missing or empty.")
+
+    # Parse JSON payload
+    try:
+        payload = json.loads(research_json)
+    except json.JSONDecodeError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid JSON: {e.msg}")
+
+    if not isinstance(payload, dict):
+        raise HTTPException(status_code=422, detail="Research payload must be a JSON object.")
+
+    # Retrieve the idea-bound project_context to verify binding
+    # We need the idea hash from the stored entry; look it up without token first
+    entry = research_module.get_pending_request(request_id)
+    if entry is None:
+        raise HTTPException(status_code=404, detail="Research request not found or has expired.")
+
+    # We cannot reconstruct project_context from the hash (one-way), so we ask research module
+    # to perform constant-time verification using a sentinel empty string — the real
+    # binding check happens via idea_hash comparison inside import_research().
+    # Since we stored idea_hash = sha256(project_context), we pass a dummy context and
+    # let import_research raise if it doesn't match. But we don't know the context here.
+    # Instead we verify in two steps: token auth first, then attachment via evaluate.
+    #
+    # DESIGN NOTE: The import endpoint trusts the stored idea_hash binding that was
+    # created during /research/request. Token verification proves the caller is the
+    # same browser session that created the request; the idea binding is enforced in
+    # get_imported_research() at /evaluate time when both context and request_id are present.
+    #
+    # To verify token only (not idea), we import with a special bypass using the stored hash:
+    from research import _hash_token, _pending_requests, _store_lock
+    import hashlib, secrets as _sec
+
+    with _store_lock:
+        _entry = _pending_requests.get(request_id)
+        if _entry is None:
+            raise HTTPException(status_code=404, detail="Research request not found or has expired.")
+        if not _sec.compare_digest(_hash_token(raw_token), _entry["token_hash"]):
+            raise HTTPException(status_code=401, detail="Invalid capability token.")
+        if _entry["imported"]:
+            raise HTTPException(status_code=409, detail="Research has already been imported for this request.")
+        # Validate payload
+        try:
+            from research import _validate_research_payload
+            validated = _validate_research_payload(payload, request_id)
+        except ValueError as e:
+            raise HTTPException(status_code=422, detail=str(e))
+        # Commit
+        _entry["imported"] = True
+        _entry["research"] = validated
+        _pending_requests[request_id] = _entry
+
+    return JSONResponse(content={
+        "status": "imported",
+        "request_id": request_id,
+        "competitor_count": len(validated.get("competitors", [])),
+    })
 
 
 @app.exception_handler(HTTPException)
