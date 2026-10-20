@@ -35,13 +35,13 @@ class TestEvalPipeline(unittest.TestCase):
             "finding": "Uses WebSockets for real-time messaging",
             "evidence": "Mentioned in Architecture section of README",
             "source": "README.md",
-            "evidence_type": "project",
+            "evidence_type": "documented_fact",
             "confidence": 85,
         }
         res = _validate_finding(valid)
         self.assertIsNotNone(res)
         self.assertEqual(res["finding"], "Uses WebSockets for real-time messaging")
-        self.assertEqual(res["evidence_type"], "project")
+        self.assertEqual(res["evidence_type"], "documented_fact")
         self.assertEqual(res["confidence"], 85)
 
         # Invalid type falls back to not_verified
@@ -66,7 +66,7 @@ class TestEvalPipeline(unittest.TestCase):
                     "finding": "Implemented with FastAPI and Vite",
                     "evidence": "package.json and backend/main.py verified",
                     "source": "Codebase",
-                    "evidence_type": "project",
+                    "evidence_type": "documented_fact",
                     "confidence": 95,
                 }
             ],
@@ -76,7 +76,7 @@ class TestEvalPipeline(unittest.TestCase):
         self.assertEqual(validated["confidence"], 90)
         self.assertEqual(validated["evidence_quality"], 80)
         self.assertEqual(len(validated["key_findings"]), 1)
-        self.assertEqual(validated["key_findings"][0]["evidence_type"], "project")
+        self.assertEqual(validated["key_findings"][0]["evidence_type"], "documented_fact")
 
         # Fallback defaults for missing/corrupted data
         corrupted = _validate_judge_result({}, "technical")

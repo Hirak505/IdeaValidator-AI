@@ -10,6 +10,7 @@ from prompts import (
 )
 from gemini_service import call_judge
 import json
+import re
 
 
 VALID_EVIDENCE_TYPES = {"documented_fact", "supported_inference", "not_documented", "requires_verification", "unsupported_claim", "not_verified"}
@@ -38,27 +39,107 @@ def _clamp_int(value, lo: int, hi: int, default: int) -> int:
         return default
 
 
-def _validate_finding(finding: dict) -> dict | None:
-    """Validate a single key finding from a judge. Returns None if invalid."""
+def _validate_finding(finding: dict, project_context: str = "") -> dict | None:
+    """
+    Validate and verify a single key finding from a judge.
+    Performs schema validation, then verifies quoted evidence and factual claims
+    against the original extracted project submission text.
+    """
     if not isinstance(finding, dict):
         return None
-    f = finding.get("finding", "")
-    if not f or not isinstance(f, str):
+    raw_f = finding.get("finding")
+    if not raw_f or not isinstance(raw_f, str):
         return None
     evidence_type = finding.get("evidence_type", "not_verified")
     if evidence_type not in VALID_EVIDENCE_TYPES:
         evidence_type = "not_verified"
+
+    finding_text = str(raw_f).strip()[:300]
+
+    raw_evidence = finding.get("evidence")
+    if raw_evidence is None or not isinstance(raw_evidence, (str, int, float)):
+        evidence_text = "Not directly verified"
+    else:
+        evidence_text = str(raw_evidence).strip()[:300]
+    if not evidence_text:
+        evidence_text = "Not directly verified"
+
+    raw_source = finding.get("source")
+    if raw_source is None or not isinstance(raw_source, (str, int, float)):
+        source_text = "N/A"
+    else:
+        source_text = str(raw_source).strip()[:200]
+    if not source_text:
+        source_text = "N/A"
+
+    confidence_val = _clamp_int(finding.get("confidence", 50), 0, 100, 50)
+
+    # Distinguish schema validation from actual evidence verification against project_context
+    if project_context and project_context.strip():
+        norm_context = project_context.lower()
+        evidence_clean = re.sub(r'["\']', '', evidence_text).strip().lower()
+
+        # Check source attribution: verify cited slide/page exists in context if present
+        source_lower = source_text.lower()
+        slide_page_match = re.search(r'\b(slide|page)\s*(\d+)\b', source_lower)
+        source_valid = True
+        if slide_page_match:
+            marker_type, marker_num = slide_page_match.groups()
+            expected_marker = f"[{marker_type} {marker_num}]"
+            # If context has page/slide markers and the cited one is absent, flag attribution as invalid
+            if f"[{marker_type} " in norm_context and expected_marker not in norm_context:
+                source_valid = False
+
+        if evidence_type == "documented_fact":
+            is_grounded = False
+            if source_valid and evidence_clean and evidence_clean not in ("not directly verified", "n/a", "none", "unknown"):
+                # Direct quote or substring match
+                if evidence_clean in norm_context:
+                    is_grounded = True
+                else:
+                    # Token overlap match for longer factual phrases
+                    words = [w for w in re.findall(r'\b[a-z0-9_]{3,}\b', evidence_clean)]
+                    if words:
+                        matched = [w for w in words if w in norm_context]
+                        if len(matched) / len(words) >= 0.6:
+                            is_grounded = True
+
+            if not is_grounded:
+                # Demote unverified "documented_fact" claims to unverified or unsupported
+                if evidence_clean in ("not directly verified", "n/a", "none", "", "unknown"):
+                    evidence_type = "not_verified"
+                else:
+                    evidence_type = "unsupported_claim"
+                confidence_val = min(confidence_val, 45)
+
+        elif evidence_type == "supported_inference":
+            finding_words = [w for w in re.findall(r'\b[a-z0-9_]{3,}\b', finding_text.lower())]
+            evidence_words = [w for w in re.findall(r'\b[a-z0-9_]{3,}\b', evidence_clean)]
+
+            has_support = False
+            # An inference is grounded if either cited evidence or finding terms are rooted in the context
+            if evidence_clean and evidence_clean not in ("not directly verified", "n/a", "none") and evidence_clean in norm_context:
+                has_support = True
+            elif evidence_words and any(w in norm_context for w in evidence_words):
+                has_support = True
+            elif finding_words and any(w in norm_context for w in finding_words):
+                has_support = True
+
+            if not has_support:
+                evidence_type = "not_verified"
+                confidence_val = min(confidence_val, 40)
+
     return {
-        "finding": str(f).strip()[:300],
-        "evidence": str(finding.get("evidence", "Not directly verified")).strip()[:300],
-        "source": str(finding.get("source", "N/A")).strip()[:200],
+        "finding": finding_text,
+        "evidence": evidence_text,
+        "source": source_text,
         "evidence_type": evidence_type,
-        "confidence": _clamp_int(finding.get("confidence", 50), 0, 100, 50),
+        "confidence": confidence_val,
     }
 
 
-def _validate_judge_result(result: dict, judge_type: str) -> dict:
-    """Ensure judge result has required fields, correct types, and safe bounded values."""
+def _validate_judge_result(result: dict, judge_type: str, project_context: str = "") -> dict:
+    """Ensure judge result has required fields, correct types, and verified bounded values."""
     if not isinstance(result, dict):
         result = {}
 
@@ -83,13 +164,13 @@ def _validate_judge_result(result: dict, judge_type: str) -> dict:
     result["confidence"] = _clamp_int(result.get("confidence"), 0, 100, 50)
     result["evidence_quality"] = _clamp_int(result.get("evidence_quality"), 0, 100, 50)
 
-    # Validate key_findings
+    # Validate key_findings against project_context
     raw_findings = result.get("key_findings", [])
     if not isinstance(raw_findings, list):
         raw_findings = []
     validated_findings = []
     for finding in raw_findings[:5]:
-        validated = _validate_finding(finding)
+        validated = _validate_finding(finding, project_context=project_context)
         if validated:
             validated_findings.append(validated)
     if not validated_findings:
@@ -275,25 +356,25 @@ def calculate_consensus(innovation: dict, technical: dict, business: dict, prese
 async def run_innovation_judge(project_context: str) -> dict:
     prompt = INNOVATION_JUDGE_PROMPT.format(project_context=project_context)
     result = await call_judge(prompt, "Innovation Judge")
-    return _validate_judge_result(result, "innovation")
+    return _validate_judge_result(result, "innovation", project_context=project_context)
 
 
 async def run_technical_judge(project_context: str) -> dict:
     prompt = TECHNICAL_JUDGE_PROMPT.format(project_context=project_context)
     result = await call_judge(prompt, "Technical Judge")
-    return _validate_judge_result(result, "technical")
+    return _validate_judge_result(result, "technical", project_context=project_context)
 
 
 async def run_business_judge(project_context: str) -> dict:
     prompt = BUSINESS_JUDGE_PROMPT.format(project_context=project_context)
     result = await call_judge(prompt, "Business Judge")
-    return _validate_judge_result(result, "business")
+    return _validate_judge_result(result, "business", project_context=project_context)
 
 
 async def run_presentation_judge(project_context: str) -> dict:
     prompt = PRESENTATION_JUDGE_PROMPT.format(project_context=project_context)
     result = await call_judge(prompt, "Presentation Judge")
-    return _validate_judge_result(result, "presentation")
+    return _validate_judge_result(result, "presentation", project_context=project_context)
 
 
 async def run_chief_judge(
@@ -337,14 +418,23 @@ async def run_chief_judge(
 
 
 async def run_all_judges(project_context: str, attack_mode: bool = False) -> dict:
-    """Run all four specialist judges in parallel, then run the chief judge."""
-    # Run specialist judges concurrently
-    innovation, technical, business, presentation = await asyncio.gather(
-        run_innovation_judge(project_context),
-        run_technical_judge(project_context),
-        run_business_judge(project_context),
-        run_presentation_judge(project_context),
-    )
+    """Run all four specialist judges in parallel with safe sibling cancellation, then chief judge."""
+    specialist_tasks = [
+        asyncio.create_task(run_innovation_judge(project_context)),
+        asyncio.create_task(run_technical_judge(project_context)),
+        asyncio.create_task(run_business_judge(project_context)),
+        asyncio.create_task(run_presentation_judge(project_context)),
+    ]
+
+    try:
+        innovation, technical, business, presentation = await asyncio.gather(*specialist_tasks)
+    except Exception as exc:
+        # Cancel running sibling tasks immediately so they do not consume worker threads or API quota
+        for task in specialist_tasks:
+            if not task.done():
+                task.cancel()
+        await asyncio.gather(*specialist_tasks, return_exceptions=True)
+        raise exc
 
     # Calculate consensus programmatically (no AI needed)
     consensus = calculate_consensus(innovation, technical, business, presentation)

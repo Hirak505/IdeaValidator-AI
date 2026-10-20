@@ -11,22 +11,78 @@ import time
 from file_parser import parse_uploaded_file, build_project_context
 from judges import run_all_judges
 from gemini_service import verify_environment
-from utils import get_temp_path, cleanup_files
+from utils import get_temp_path, cleanup_files, cleanup_stale_temp_files
 
 # Maximum file size allowed: 20MB
 MAX_FILE_SIZE_BYTES = 20 * 1024 * 1024
 CHUNK_SIZE = 64 * 1024  # 64KB chunks for streaming uploads
 
+import ipaddress
+
 # Rate limiting configuration: Max 5 requests per 60 seconds per IP
 RATE_LIMIT_REQUESTS = 5
 RATE_LIMIT_WINDOW_SECONDS = 60
 _request_records = defaultdict(list)
+_last_prune_time = 0.0
+
+# Explicitly trusted proxy IPs and CIDR networks (e.g. internal ingress / load balancer subnets)
+raw_trusted_proxies = os.getenv("TRUSTED_PROXIES", "")
+TRUSTED_PROXIES = {p.strip() for p in raw_trusted_proxies.split(",") if p.strip()}
+
+
+def _parse_trusted_proxies(proxy_input: str | set | list) -> list[ipaddress.IPv4Network | ipaddress.IPv6Network]:
+    """Parse comma-separated IPs, CIDR ranges, or sets into ipaddress networks."""
+    networks = []
+    if isinstance(proxy_input, str):
+        items = proxy_input.split(",")
+    else:
+        items = list(proxy_input)
+
+    for item in items:
+        stripped = str(item).strip()
+        if stripped:
+            try:
+                networks.append(ipaddress.ip_network(stripped, strict=False))
+            except ValueError:
+                pass
+    return networks
+
+
+def _is_trusted_proxy(ip_str: str) -> bool:
+    """Check if an IP address falls within configured trusted proxy networks or IPs."""
+    if not ip_str or ip_str == "unknown":
+        return False
+    # Check both module-level TRUSTED_PROXIES and current os.environ
+    env_proxies = os.getenv("TRUSTED_PROXIES", "")
+    sources = [TRUSTED_PROXIES]
+    if env_proxies:
+        sources.append(env_proxies)
+
+    for source in sources:
+        trusted_networks = _parse_trusted_proxies(source)
+        if trusted_networks:
+            try:
+                addr = ipaddress.ip_address(ip_str)
+                if any(addr in net for net in trusted_networks):
+                    return True
+            except ValueError:
+                pass
+    return False
 
 
 def check_rate_limit(client_ip: str) -> tuple[bool, int]:
-    """Sliding-window rate limiter per client IP."""
+    """Sliding-window rate limiter per client IP with bounded stale-entry eviction."""
+    global _last_prune_time
     now = time.time()
     cutoff = now - RATE_LIMIT_WINDOW_SECONDS
+
+    # Evict stale IP entries with a 10s cooldown to prevent redundant work under high request volume
+    if len(_request_records) > 500 and (now - _last_prune_time) > 10.0:
+        _last_prune_time = now
+        stale_ips = [ip for ip, ts in _request_records.items() if not ts or ts[-1] <= cutoff]
+        for ip in stale_ips:
+            del _request_records[ip]
+
     timestamps = [t for t in _request_records[client_ip] if t > cutoff]
     if len(timestamps) >= RATE_LIMIT_REQUESTS:
         retry_after = int(timestamps[0] + RATE_LIMIT_WINDOW_SECONDS - now) + 1
@@ -38,17 +94,39 @@ def check_rate_limit(client_ip: str) -> tuple[bool, int]:
 
 
 def get_client_ip(request: Request) -> str:
-    """Extract client IP safely from request."""
+    """
+    Extract client IP safely from request.
+    Only trusts X-Forwarded-For if request comes directly from a trusted proxy (supports CIDR and IPv4/IPv6).
+    Walks forwarded chain right-to-left to determine the true client IP without accepting spoofed leftmost hops.
+    """
+    direct_ip = request.client.host if request.client else "unknown"
+    if not _is_trusted_proxy(direct_ip):
+        return direct_ip
+
     forwarded = request.headers.get("X-Forwarded-For")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.client.host if request.client else "unknown"
+    if not forwarded:
+        return direct_ip
+
+    # Split hops: rightmost hops are closest to our trusted reverse proxy
+    hops = [h.strip() for h in forwarded.split(",") if h.strip()]
+    if not hops:
+        return direct_ip
+
+    # Walk backwards from closest hop to find the first untrusted client IP
+    client_ip = hops[0]
+    for hop in reversed(hops):
+        if not _is_trusted_proxy(hop):
+            client_ip = hop
+            break
+    return client_ip
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     # Enforce pre-deploy requirement: refuse to start if required env variables missing
     verify_environment()
+    # Prune any stale upload files left from previous crashed sessions
+    cleanup_stale_temp_files(max_age_seconds=3600)
     yield
 
 
@@ -112,6 +190,12 @@ async def _save_upload_safely(upload_file: UploadFile, temp_path: str) -> None:
 
     if total_bytes == 0:
         raise HTTPException(status_code=400, detail="Uploaded file is empty.")
+
+    # Restrict file permissions on supported systems (owner-read/write only)
+    try:
+        os.chmod(temp_path, 0o600)
+    except OSError:
+        pass
 
 
 @app.post("/evaluate")

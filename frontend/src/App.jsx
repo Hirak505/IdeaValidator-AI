@@ -360,7 +360,7 @@ export default function App() {
             <div className="space-y-4 mb-6">
               <UploadZone
                 label="Pitch Deck"
-                accept=".pdf,.pptx,.ppt"
+                accept=".pdf,.pptx"
                 hint="PDF or PPTX — up to 20MB"
                 file={pitchDeck}
                 onFile={setPitchDeck}
@@ -373,7 +373,7 @@ export default function App() {
               </div>
               <UploadZone
                 label="README.md"
-                accept=".md,.txt"
+                accept=".md"
                 hint="Markdown file from your GitHub repo"
                 file={readme}
                 onFile={setReadme}

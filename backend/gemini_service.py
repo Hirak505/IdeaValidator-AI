@@ -69,19 +69,57 @@ def extract_json_from_response(text: str) -> dict:
     raise ValueError("Could not parse structured evaluation output.")
 
 
+from concurrent.futures import ThreadPoolExecutor
+
+MAX_CONCURRENT_CALLS = int(os.getenv("MAX_CONCURRENT_CALLS", "4"))
+_concurrency_semaphore = None
+_thread_pool = None
+
+
+def get_concurrency_semaphore() -> asyncio.Semaphore:
+    """Lazy initialize semaphore within the active asyncio event loop."""
+    global _concurrency_semaphore
+    if _concurrency_semaphore is None:
+        _concurrency_semaphore = asyncio.Semaphore(MAX_CONCURRENT_CALLS)
+    return _concurrency_semaphore
+
+
+def get_thread_pool() -> ThreadPoolExecutor:
+    """Dedicated thread pool bounded to MAX_CONCURRENT_CALLS to prevent worker thread exhaustion."""
+    global _thread_pool
+    if _thread_pool is None:
+        _thread_pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_CALLS, thread_name_prefix="gemini_judge")
+    return _thread_pool
+
+
 async def call_judge(prompt: str, judge_name: str) -> dict:
     """
     Call Gemini with a judge prompt and return parsed JSON response.
-    Enforces a strict 30-second timeout and prevents secret or internal trace leaks in errors.
+    Enforces bounded concurrency across threads, strict 30-second timeout,
+    and prevents capacity release before the underlying synchronous thread finishes.
     """
+    semaphore = get_concurrency_semaphore()
+    await semaphore.acquire()
+
+    loop = asyncio.get_running_loop()
+    released = False
+
+    def release_capacity(*args):
+        nonlocal released
+        if not released:
+            released = True
+            loop.call_soon_threadsafe(semaphore.release)
+
     try:
         model = get_model()
+        pool = get_thread_pool()
+        # Submit to bounded thread pool
+        fut = loop.run_in_executor(pool, model.generate_content, prompt)
+        # Capacity is only freed once the synchronous thread actually completes
+        fut.add_done_callback(release_capacity)
 
-        # Execute external API call with strict 30-second timeout
-        response = await asyncio.wait_for(
-            asyncio.to_thread(model.generate_content, prompt),
-            timeout=TIMEOUT_SECONDS,
-        )
+        # Execute with strict timeout; shield prevents cancelling fut prematurely
+        response = await asyncio.wait_for(asyncio.shield(fut), timeout=TIMEOUT_SECONDS)
 
         if not response or not response.text:
             raise ValueError(f"{judge_name} returned an empty response.")

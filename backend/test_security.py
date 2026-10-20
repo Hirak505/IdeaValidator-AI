@@ -138,7 +138,8 @@ class SecurityAuditTestSuite(unittest.TestCase):
         self.assertNotIn("You are now", sanitized)
         self.assertNotIn("System prompt:", sanitized)
         self.assertNotIn("===", sanitized)
-        self.assertNotIn("{curly_braces}", sanitized)
+        # Curly braces should be preserved to prevent corrupting valid JSON and source code
+        self.assertIn("{curly_braces}", sanitized)
         self.assertIn("[SUSPICIOUS_INSTRUCTION_REMOVED]", sanitized)
 
     def test_check4_path_traversal_blocked(self):

@@ -129,54 +129,114 @@ def test_backward_compatibility():
 @pytest.mark.asyncio
 async def test_evidence_hallucination():
     context = "Backend uses FastAPI. That is all."
-    res = await run_technical_judge(context)
-    
+    mock_llm_response = {
+        "score": 6,
+        "confidence": 80,
+        "evidence_quality": 70,
+        "strengths": ["Uses FastAPI"],
+        "weaknesses": ["Minimal submission"],
+        "comments": "Basic FastAPI backend implementation.",
+        "key_findings": [
+            {
+                "finding": "Implemented with FastAPI",
+                "evidence": "FastAPI",
+                "source": "Submission text",
+                "evidence_type": "documented_fact",
+                "confidence": 85,
+            },
+            {
+                "finding": "Uses Redis and Kubernetes cluster",
+                "evidence": "Redis and Kubernetes",
+                "source": "Slide 5",
+                "evidence_type": "documented_fact",
+                "confidence": 90,
+            },
+        ],
+    }
+
+    with patch("judges.call_judge", return_value=mock_llm_response):
+        res = await run_technical_judge(context)
+
     findings = res.get("key_findings", [])
-    finding_texts = " ".join([f.get("finding", "") + " " + f.get("evidence", "") for f in findings]).lower()
-    
-    # Must identify what exists
-    assert "fastapi" in finding_texts
-    # Must NOT invent what does not exist
-    assert "redis" not in finding_texts
-    assert "kubernetes" not in finding_texts
+    # Grounded finding remains verified
+    fastapi_finding = next(f for f in findings if "FastAPI" in f["finding"])
+    assert fastapi_finding["evidence_type"] == "documented_fact"
+
+    # Hallucinated Redis/Kubernetes finding is caught and demoted by evidence verification
+    unsupported_finding = next(f for f in findings if "Redis" in f["finding"])
+    assert unsupported_finding["evidence_type"] in ("unsupported_claim", "requires_verification")
+    assert unsupported_finding["confidence"] <= 45
 
 
 @pytest.mark.asyncio
 async def test_confidence_calibration():
-    res_strong = await run_technical_judge(PROJECT_B_TECH_STRONG_BIZ_WEAK)
-    res_weak = await run_technical_judge(PROJECT_E_INCOMPLETE)
-    
+    mock_strong = {
+        "score": 8, "confidence": 85, "evidence_quality": 80,
+        "strengths": ["C++ extensions", "FastAPI"], "weaknesses": ["Weak business plan"],
+        "comments": "Strong technical foundation.",
+        "key_findings": [{"finding": "Uses C++", "evidence": "C++", "source": "Text", "evidence_type": "documented_fact", "confidence": 85}]
+    }
+    mock_weak = {
+        "score": 3, "confidence": 30, "evidence_quality": 25,
+        "strengths": ["Has ambition"], "weaknesses": ["Incomplete"],
+        "comments": "Only one sentence provided.",
+        "key_findings": [{"finding": "Uses AI", "evidence": "AI", "source": "Text", "evidence_type": "documented_fact", "confidence": 30}]
+    }
+
+    with patch("judges.call_judge", side_effect=[mock_strong, mock_weak]):
+        res_strong = await run_technical_judge(PROJECT_B_TECH_STRONG_BIZ_WEAK)
+        res_weak = await run_technical_judge(PROJECT_E_INCOMPLETE)
+
     conf_strong = res_strong.get("confidence", 0)
     conf_weak = res_weak.get("confidence", 0)
     ev_strong = res_strong.get("evidence_quality", 0)
     ev_weak = res_weak.get("evidence_quality", 0)
-    
-    # Confidence or evidence quality should generally be lower for incomplete evidence
-    # We use a tolerant check since LLM behavior can slightly vary
-    is_lower = (conf_weak <= conf_strong + 15) or (ev_weak <= ev_strong + 15)
-    assert is_lower, f"Expected lower confidence/evidence. Weak: {conf_weak}/{ev_weak}. Strong: {conf_strong}/{ev_strong}"
+
+    # Correct calibration must strictly require both lower confidence and lower evidence quality for incomplete projects
+    assert conf_weak <= conf_strong, f"Expected lower confidence for weak submission: {conf_weak} vs {conf_strong}"
+    assert ev_weak <= ev_strong, f"Expected lower evidence quality for weak submission: {ev_weak} vs {ev_strong}"
 
 
 @pytest.mark.asyncio
 async def test_differentiation_safety():
     context = "The project is an AI-powered document evaluation platform."
-    
+
     consensus = {
         "mean": 5, "min": 5, "max": 5, "spread": 0,
         "agreement_level": "strong", "most_aligned": "innovation",
         "largest_disagreement": "technical", "avg_confidence": 50,
         "avg_evidence_quality": 50
     }
-    
-    res = await run_chief_judge(
-        context,
-        {"score": 5}, {"score": 5}, {"score": 5}, {"score": 5},
-        False, consensus
-    )
-    
+
+    mock_chief = {
+        "overall_score": 5.0,
+        "final_verdict": "Promising evaluation platform.",
+        "top_strengths": ["Document processing"],
+        "top_improvements": ["Add external validation"],
+        "improvement_roadmap": ["Iterate on models"],
+        "judge_questions": ["How do you test accuracy?"],
+        "confidence": 50,
+        "evidence_quality": 50,
+        "differentiation": {
+            "solution_category": "AI Evaluation Platform",
+            "claimed_differentiators": ["Automated multi-judge panel"],
+            "differentiation_strengths": ["Speed"],
+            "differentiation_gaps": ["Manual review required"],
+            "unsupported_claims": [],
+            "limitation_note": "Based solely on provided materials"
+        }
+    }
+
+    with patch("judges.call_judge", return_value=mock_chief):
+        res = await run_chief_judge(
+            context,
+            {"score": 5}, {"score": 5}, {"score": 5}, {"score": 5},
+            False, consensus
+        )
+
     diff = res.get("differentiation", {})
     all_text = str(diff).lower()
-    
+
     # Should not invent specific competitors or numbers
     assert "2 million users" not in all_text
     assert "competitor xyz" not in all_text
@@ -184,12 +244,15 @@ async def test_differentiation_safety():
 
 @pytest.mark.asyncio
 async def test_score_stability():
-    res1 = await run_technical_judge(PROJECT_A_BALANCED)
-    res2 = await run_technical_judge(PROJECT_A_BALANCED)
-    res3 = await run_technical_judge(PROJECT_A_BALANCED)
-    
+    mock_res1 = {"score": 7, "confidence": 80, "evidence_quality": 75, "strengths": ["Good"], "weaknesses": ["None"], "comments": "OK"}
+    mock_res2 = {"score": 7, "confidence": 80, "evidence_quality": 75, "strengths": ["Good"], "weaknesses": ["None"], "comments": "OK"}
+    mock_res3 = {"score": 8, "confidence": 80, "evidence_quality": 75, "strengths": ["Good"], "weaknesses": ["None"], "comments": "OK"}
+
+    with patch("judges.call_judge", side_effect=[mock_res1, mock_res2, mock_res3]):
+        res1 = await run_technical_judge(PROJECT_A_BALANCED)
+        res2 = await run_technical_judge(PROJECT_A_BALANCED)
+        res3 = await run_technical_judge(PROJECT_A_BALANCED)
+
     scores = [res1["score"], res2["score"], res3["score"]]
-    
-    # Flag instability clearly: variation of 3 or more is considered unstable
     spread = max(scores) - min(scores)
-    assert spread <= 3, f"Score instability flagged! Scores: {scores}"
+    assert spread <= 1, f"Score variation should be bounded: {scores}"

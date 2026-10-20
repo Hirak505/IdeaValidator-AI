@@ -54,9 +54,6 @@ def sanitize_extracted_text(text: str) -> str:
     sanitized = sanitized.replace("<project_document_content", "<project_doc")
     sanitized = sanitized.replace("</project_document_content>", "</project_doc>")
 
-    # Escape curly braces to avoid breaking Python prompt string templates (.format)
-    sanitized = sanitized.replace("{", "(").replace("}", ")")
-
     # Limit maximum characters from any single file
     if len(sanitized) > MAX_EXTRACTED_CHARS:
         sanitized = sanitized[:MAX_EXTRACTED_CHARS] + "\n\n[Content truncated to prevent resource exhaustion]"
@@ -247,7 +244,7 @@ def parse_uploaded_file(file_path: str, filename: str) -> dict:
         validate_file_magic_bytes(file_path, "pdf")
         raw_text = extract_pdf_text(file_path)
         file_type = "pitch_deck_pdf"
-    elif ext in (".pptx", ".ppt"):
+    elif ext == ".pptx":
         validate_file_magic_bytes(file_path, "pptx")
         raw_text = extract_pptx_text(file_path)
         file_type = "pitch_deck_pptx"
