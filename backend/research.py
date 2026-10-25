@@ -17,13 +17,29 @@ IMPORTANT LIMITATIONS (by design):
 
 import hashlib
 import ipaddress
+import json
+import logging
+import os
+import re
 import secrets
 import threading
 import time
-import re
 import uuid
+from pathlib import Path
 from typing import Optional
 from urllib.parse import urlparse
+
+try:
+    from dotenv import load_dotenv
+    _env_file = Path(__file__).resolve().parent / ".env"
+    if _env_file.exists():
+        load_dotenv(_env_file, override=False)
+except ImportError:
+    load_dotenv = None
+
+import httpx
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -125,6 +141,9 @@ def create_research_request(project_context: str) -> dict:
             "created_at": time.time(),
             "imported": False,
             "research": None,
+            "auto_status": "idle",       # "idle" | "processing" | "completed" | "failed"
+            "auto_error": None,
+            "research_prompt": None,
         }
 
     return {
@@ -147,6 +166,57 @@ def get_pending_request(request_id: str) -> Optional[dict]:
             del _pending_requests[request_id]
             return None
         return dict(entry)  # shallow copy
+
+
+def set_auto_status(request_id: str, status: str, error: Optional[str] = None) -> None:
+    """Set the automation status ('processing', 'completed', 'failed') for request_id."""
+    with _store_lock:
+        entry = _pending_requests.get(request_id)
+        if entry is not None:
+            entry["auto_status"] = status
+            entry["auto_error"] = error
+            _pending_requests[request_id] = entry
+
+
+def get_auto_status(request_id: str) -> Optional[dict]:
+    """
+    Get the automation status for request_id.
+    Never exposes auth tokens, API keys, or raw secrets.
+    """
+    with _store_lock:
+        entry = _pending_requests.get(request_id)
+        if entry is None:
+            return None
+        if time.time() - entry["created_at"] > REQUEST_TTL_SECONDS:
+            del _pending_requests[request_id]
+            return None
+        status = entry.get("auto_status", "idle")
+        if entry.get("imported") and entry.get("research"):
+            status = "completed"
+        return {
+            "status": status,
+            "request_id": request_id,
+            "error": entry.get("auto_error"),
+            "competitor_count": len(entry["research"].get("competitors", [])) if entry.get("research") else 0,
+        }
+
+
+def set_research_prompt(request_id: str, prompt: str) -> None:
+    """Store research prompt for manual fallback."""
+    with _store_lock:
+        entry = _pending_requests.get(request_id)
+        if entry is not None:
+            entry["research_prompt"] = prompt
+            _pending_requests[request_id] = entry
+
+
+def get_research_prompt(request_id: str) -> Optional[str]:
+    """Retrieve stored research prompt."""
+    with _store_lock:
+        entry = _pending_requests.get(request_id)
+        if entry is not None:
+            return entry.get("research_prompt")
+        return None
 
 
 def import_research(
@@ -196,6 +266,61 @@ def import_research(
                 "Research request ID does not match the submitted idea. "
                 "Please create a new research request for this idea."
             )
+
+        if entry["imported"]:
+            raise ValueError("Research has already been imported for this request. Duplicate import rejected.")
+
+        # Validate the payload schema
+        validated = _validate_research_payload(payload, request_id)
+
+        # Commit — mark as single-use
+        entry["imported"] = True
+        entry["research"] = validated
+        _pending_requests[request_id] = entry
+
+    return validated
+
+
+def import_research_by_token(
+    request_id: str,
+    raw_token: str,
+    payload: dict,
+) -> dict:
+    """
+    Validate the capability token and research payload, then associate validated
+    research with the pending request — WITHOUT requiring project_context.
+
+    This is the public API for the /research/import endpoint, which cannot
+    reconstruct the original project_context from its hash. Idea-binding is
+    enforced later by get_imported_research() at /evaluate time.
+
+    Raises ValueError with a safe, client-facing message on any validation failure.
+    Returns the validated research dict on success.
+    """
+    if not request_id or not isinstance(request_id, str):
+        raise ValueError("Missing or invalid request_id.")
+    if not raw_token or not isinstance(raw_token, str):
+        raise ValueError("Missing or invalid capability token.")
+
+    # Validate payload size before deep inspection
+    if not isinstance(payload, dict):
+        raise ValueError("Research payload must be a JSON object.")
+    import json as _json
+    payload_chars = len(_json.dumps(payload))
+    if payload_chars > MAX_PAYLOAD_CHARS:
+        raise ValueError(
+            f"Research payload is too large ({payload_chars} characters). Maximum is {MAX_PAYLOAD_CHARS}."
+        )
+
+    with _store_lock:
+        _evict_expired()
+        entry = _pending_requests.get(request_id)
+        if entry is None:
+            raise ValueError("Research request not found or has expired.")
+
+        # Constant-time token comparison
+        if not secrets.compare_digest(_hash_token(raw_token), entry["token_hash"]):
+            raise ValueError("Invalid capability token.")
 
         if entry["imported"]:
             raise ValueError("Research has already been imported for this request. Duplicate import rejected.")
@@ -553,3 +678,397 @@ def format_research_for_prompt(research: dict) -> str:
 
     lines.append("</external_market_research>")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Agent37 Client & Automated Research Workflow
+# ---------------------------------------------------------------------------
+
+class Agent37Error(Exception):
+    """Base exception for Agent37 operations."""
+    pass
+
+
+class Agent37ConfigError(Agent37Error):
+    """Agent37 configuration missing or invalid."""
+    pass
+
+
+class Agent37AuthError(Agent37Error):
+    """Agent37 authentication failed (HTTP 401)."""
+    pass
+
+
+class Agent37BudgetError(Agent37Error):
+    """Agent37 wallet balance or instance budget exhausted (HTTP 402/403)."""
+    pass
+
+
+class Agent37ConflictError(Agent37Error):
+    """Agent37 session or instance busy (HTTP 409)."""
+    pass
+
+
+class Agent37TimeoutError(Agent37Error):
+    """Agent37 request timed out."""
+    pass
+
+
+class Agent37InstanceNotFoundError(Agent37Error):
+    """Agent37 Mythos instance not found."""
+    pass
+
+
+class Agent37OutputError(Agent37Error):
+    """Agent37 response could not be parsed or validated."""
+    pass
+
+
+def extract_instance_id(value: Optional[str]) -> Optional[str]:
+    """
+    Extract the instance ID from a raw ID or full instance URL.
+    Examples:
+        'jh487mzr9e' -> 'jh487mzr9e'
+        'https://jh487mzr9e.agent37.app' -> 'jh487mzr9e'
+        'https://jh487mzr9e.agent37.app/v1/responses' -> 'jh487mzr9e'
+        'jh487mzr9e.agent37.app' -> 'jh487mzr9e'
+    """
+    if not value or not isinstance(value, str):
+        return None
+    val = value.strip()
+    if not val:
+        return None
+    if "://" in val:
+        parsed = urlparse(val)
+        host = parsed.netloc or parsed.path
+    else:
+        host = val.split("/")[0]
+
+    if ".agent37.app" in host.lower():
+        subdomain = host.split(".")[0].strip()
+        return subdomain or None
+    return host.strip() or None
+
+
+def get_agent37_config() -> dict:
+    """Read Agent37 settings from environment variables."""
+    api_key = os.getenv("AGENT37_API_KEY", "").strip()
+    # Strip accidental surrounding quotes if present
+    if (api_key.startswith('"') and api_key.endswith('"')) or (api_key.startswith("'") and api_key.endswith("'")):
+        api_key = api_key[1:-1].strip()
+    # Normalize accidental stray 'y' if prepended before sk_live_
+    if api_key.startswith("ysk_live_"):
+        api_key = api_key[1:]
+
+    instance_id = os.getenv("AGENT37_INSTANCE_ID", "").strip() or None
+    instance_url = os.getenv("AGENT37_INSTANCE_URL", "").strip() or None
+    if not instance_id and instance_url:
+        instance_id = extract_instance_id(instance_url)
+
+    try:
+        timeout = float(os.getenv("AGENT37_RESEARCH_TIMEOUT", "90"))
+    except (ValueError, TypeError):
+        timeout = 90.0
+    base_url = os.getenv("AGENT37_BASE_URL", "https://api.agent37.com").strip().rstrip("/")
+    return {
+        "api_key": api_key,
+        "instance_id": instance_id,
+        "instance_url": instance_url,
+        "timeout": timeout,
+        "base_url": base_url,
+    }
+
+
+def get_agent37_diagnostics() -> dict:
+    """
+    Produce safe diagnostic info without revealing sensitive secrets or lengths.
+    Reports only destination hostname, authentication header name, and whether key is present.
+    """
+    config = get_agent37_config()
+    api_key_present = bool(config.get("api_key"))
+    instance_id = config.get("instance_id")
+    if instance_id:
+        destination = f"{instance_id}.agent37.app"
+        auth_header = "X-Agent37-Key"
+    else:
+        base_url = config.get("base_url") or "https://api.agent37.com"
+        destination = urlparse(base_url).hostname or base_url
+        auth_header = "Authorization"
+    return {
+        "destination_host": destination,
+        "auth_header": auth_header,
+        "key_present": api_key_present,
+    }
+
+
+def _extract_auth_error_detail(resp: httpx.Response) -> str:
+    """Safely extract upstream 401 error message without revealing sensitive keys or tokens."""
+    try:
+        body = resp.json()
+        if isinstance(body, dict):
+            raw_err = body.get("error") or body.get("message") or body.get("detail")
+            if isinstance(raw_err, dict):
+                raw_err = raw_err.get("message") or str(raw_err)
+            if raw_err and isinstance(raw_err, str):
+                cleaned = raw_err.strip().rstrip(".")
+                if cleaned and len(cleaned) < 256:
+                    return cleaned
+    except Exception:
+        pass
+    try:
+        if isinstance(resp.text, str):
+            text = resp.text.strip().rstrip(".")
+            if text and len(text) < 128 and not text.startswith(("<", "{", "[")):
+                return text
+    except Exception:
+        pass
+    return "invalid API key"
+
+
+async def resolve_agent37_instance(
+    api_key: str,
+    base_url: str = "https://api.agent37.com",
+    client: Optional[httpx.AsyncClient] = None,
+) -> str:
+    """
+    Deterministically resolve the Mythos instance ID from the workspace.
+    Fails safely with Agent37InstanceNotFoundError if no instance named 'Mythos' exists.
+    """
+    if not api_key:
+        raise Agent37ConfigError("Agent37 API key is missing.")
+
+    dest_host = urlparse(base_url).hostname or base_url
+    logger.info(
+        "Agent37 request diagnostic: destination=%s, auth_header=%s, key_present=%s",
+        dest_host,
+        "Authorization",
+        bool(api_key),
+    )
+    headers = {"Authorization": f"Bearer {api_key}"}
+    should_close = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=15.0)
+        should_close = True
+
+    try:
+        resp = await client.get(f"{base_url}/v1/instances", headers=headers)
+        if resp.status_code == 401:
+            detail = _extract_auth_error_detail(resp)
+            raise Agent37AuthError(f"Agent37 authentication failed: {detail}.")
+        if resp.status_code in (402, 403):
+            raise Agent37BudgetError("Agent37 wallet balance or tier limit reached.")
+        if resp.is_error:
+            raise Agent37Error(f"Agent37 instance discovery failed with HTTP {resp.status_code}.")
+
+        try:
+            data = resp.json()
+        except Exception:
+            raise Agent37Error("Agent37 control plane returned non-JSON response.")
+
+        instances = data.get("data", [])
+        if not isinstance(instances, list):
+            instances = []
+
+        mythos_instances = [
+            inst for inst in instances
+            if isinstance(inst, dict) and (inst.get("name") or "").strip().lower() == "mythos"
+        ]
+
+        if not mythos_instances:
+            names = [inst.get("name") for inst in instances if isinstance(inst, dict) and inst.get("name")]
+            found_desc = f"Found instances: {', '.join(names)}" if names else "No named instances found."
+            raise Agent37InstanceNotFoundError(
+                f"No Agent37 instance named 'Mythos' found in workspace. {found_desc} "
+                "Please set AGENT37_INSTANCE_ID or name your agent 'Mythos' in the Agent37 dashboard."
+            )
+
+        # Deterministic sorting:
+        # 1. Running status first (1 if running else 0)
+        # 2. Created timestamp descending (newest first)
+        # 3. ID string descending as tiebreaker
+        def _sort_key(inst):
+            is_running = 1 if inst.get("status") == "running" else 0
+            created = inst.get("created") or 0
+            iid = inst.get("id") or ""
+            return (is_running, created, iid)
+
+        mythos_instances.sort(key=_sort_key, reverse=True)
+        chosen = mythos_instances[0]
+        chosen_id = chosen.get("id")
+        if not chosen_id or not isinstance(chosen_id, str):
+            raise Agent37InstanceNotFoundError("Matched Mythos instance has missing or invalid ID.")
+        return chosen_id.strip()
+
+    except httpx.TimeoutException:
+        raise Agent37TimeoutError("Timed out while contacting Agent37 control plane for instance discovery.")
+    except httpx.RequestError as exc:
+        raise Agent37Error(f"Network error contacting Agent37 control plane: {exc}")
+    finally:
+        if should_close:
+            await client.aclose()
+
+
+def extract_json_from_agent_output(text: str) -> dict:
+    """
+    Safely extract JSON dictionary from Agent37 output_text.
+    Supports raw JSON, markdown ```json code blocks, or outermost curly braces.
+    Raises Agent37OutputError if valid JSON dictionary cannot be found.
+    """
+    if not text or not isinstance(text, str):
+        raise Agent37OutputError("Agent37 returned empty or non-string output.")
+
+    clean_text = text.strip()
+
+    # 1. Direct JSON parse
+    try:
+        data = json.loads(clean_text)
+        if isinstance(data, dict):
+            return data
+    except json.JSONDecodeError:
+        pass
+
+    # 2. Markdown fenced block
+    fenced = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", clean_text, re.IGNORECASE)
+    if fenced:
+        try:
+            data = json.loads(fenced.group(1).strip())
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    # 3. Outermost curly braces
+    start_idx = clean_text.find("{")
+    end_idx = clean_text.rfind("}")
+    if start_idx != -1 and end_idx != -1 and end_idx > start_idx:
+        candidate = clean_text[start_idx : end_idx + 1]
+        try:
+            data = json.loads(candidate)
+            if isinstance(data, dict):
+                return data
+        except json.JSONDecodeError:
+            pass
+
+    raise Agent37OutputError("Failed to extract valid JSON from Agent37 response.")
+
+
+async def call_agent37_response(
+    instance_id: str,
+    api_key: str,
+    prompt: str,
+    timeout: float = 90.0,
+    client: Optional[httpx.AsyncClient] = None,
+) -> dict:
+    """
+    Call POST https://{instanceId}.agent37.app/v1/responses.
+    Header: X-Agent37-Key.
+    Returns parsed dictionary from response output_text.
+    """
+    url = f"https://{instance_id}.agent37.app/v1/responses"
+    dest_host = urlparse(url).hostname or f"{instance_id}.agent37.app"
+    logger.info(
+        "Agent37 request diagnostic: destination=%s, auth_header=%s, key_present=%s",
+        dest_host,
+        "X-Agent37-Key",
+        bool(api_key),
+    )
+    headers = {
+        "X-Agent37-Key": api_key,
+        "Content-Type": "application/json",
+    }
+    payload = {
+        "input": prompt,
+        "stream": False,
+    }
+
+    should_close = False
+    if client is None:
+        client = httpx.AsyncClient(timeout=timeout)
+        should_close = True
+
+    try:
+        resp = await client.post(url, headers=headers, json=payload)
+        if resp.status_code == 401:
+            detail = _extract_auth_error_detail(resp)
+            raise Agent37AuthError(f"Agent37 authentication failed: {detail}.")
+        if resp.status_code in (402, 403):
+            raise Agent37BudgetError("Agent37 wallet balance or instance budget exhausted.")
+        if resp.status_code == 409:
+            raise Agent37ConflictError("Agent37 Mythos agent is currently busy.")
+        if resp.is_error:
+            raise Agent37Error(f"Agent37 turn request failed with HTTP {resp.status_code}.")
+
+        try:
+            body = resp.json()
+        except Exception:
+            raise Agent37OutputError("Agent37 returned non-JSON HTTP response body.")
+
+        output_text = body.get("output_text")
+        if not output_text:
+            raise Agent37OutputError("Agent37 response did not contain 'output_text'.")
+
+        return extract_json_from_agent_output(output_text)
+
+    except httpx.TimeoutException:
+        raise Agent37TimeoutError(f"Agent37 research timed out after {timeout} seconds.")
+    except httpx.RequestError as exc:
+        raise Agent37Error(f"Network error communicating with Agent37 instance: {exc}")
+    finally:
+        if should_close:
+            await client.aclose()
+
+
+async def run_agent37_research(
+    request_id: str,
+    auth_token: str,
+    project_context: str,
+    idea_summary: Optional[str] = None,
+    client: Optional[httpx.AsyncClient] = None,
+) -> dict:
+    """
+    Perform automated competitor research via Agent37 Mythos and import it into the pending request store.
+    Validates output schema and commits to store.
+    """
+    config = get_agent37_config()
+    api_key = config["api_key"]
+    if not api_key:
+        raise Agent37ConfigError(
+            "Agent37 API key not configured. Please set AGENT37_API_KEY in backend/.env."
+        )
+
+    diag = get_agent37_diagnostics()
+    logger.info(
+        "Initiating Agent37 automated research: destination=%s, auth_header=%s, key_present=%s",
+        diag["destination_host"],
+        diag["auth_header"],
+        diag["key_present"],
+    )
+
+    instance_id = config["instance_id"]
+    if not instance_id:
+        instance_id = await resolve_agent37_instance(
+            api_key=api_key,
+            base_url=config["base_url"],
+            client=client,
+        )
+
+    summary = (idea_summary or project_context)[:1500]
+    prompt = build_mythos_research_prompt(request_id, summary)
+
+    raw_payload = await call_agent37_response(
+        instance_id=instance_id,
+        api_key=api_key,
+        prompt=prompt,
+        timeout=config["timeout"],
+        client=client,
+    )
+
+    # Normalize request_id if model left placeholder
+    if not raw_payload.get("request_id") or raw_payload.get("request_id") in ("<request_id>", "{request_id}"):
+        raw_payload["request_id"] = request_id
+
+    try:
+        validated = import_research_by_token(request_id, auth_token, raw_payload)
+        return validated
+    except ValueError as exc:
+        raise Agent37OutputError(f"Agent37 research failed schema validation: {exc}")

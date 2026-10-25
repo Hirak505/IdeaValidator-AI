@@ -4,57 +4,98 @@ export default function JudgeQuestions({ questions, attackMode }) {
   const [expanded, setExpanded] = useState(null)
 
   return (
-    <div className="rounded-2xl border border-slate-800 bg-surface-900 p-6 animate-slide-up">
-      <div className="flex items-center justify-between mb-5">
+    <div className="bp-panel p-6 animate-slide-up relative">
+      <div className="corner-marks" />
+
+      {/* Header */}
+      <div className="flex items-center justify-between pb-4 mb-4 border-b border-theme-border">
         <div>
-          <h3 className="text-base font-semibold text-white">Judge Questions</h3>
-          <p className="text-xs text-slate-500 mt-0.5">
+          <span className="font-mono text-micro text-theme-text-muted tracking-widest uppercase">
+            PANEL INQUIRY // DEFENSE DRILL
+          </span>
+          <h3 className="text-base font-semibold text-theme-text mt-0.5 tracking-tight">
+            Anticipated Judge Questions
+          </h3>
+          <p className="text-micro text-theme-text-secondary font-mono mt-0.5 uppercase tracking-wider">
             {attackMode
-              ? 'Adversarial questions — be ready to defend every decision'
-              : 'Questions you should be prepared to answer'}
+              ? 'Adversarial cross-examination questions'
+              : 'Key technical and commercial inquiries'}
           </p>
         </div>
-        {attackMode && (
-          <div className="flex items-center gap-1.5 px-3 py-1 rounded-full bg-rose-500/10 border border-rose-500/25">
-            <span className="text-xs">⚡</span>
-            <span className="text-xs font-semibold text-rose-300">Attack Mode</span>
+
+        {attackMode ? (
+          <div className="flex items-center gap-2 px-3 py-1 rounded bg-theme-error/10 border border-theme-error/30">
+            <span className="w-2 h-2 rounded-full bg-theme-error animate-pulse" />
+            <span className="text-micro font-mono font-bold text-theme-error uppercase tracking-wider">
+              Attack Mode Active
+            </span>
+          </div>
+        ) : (
+          <div className="flex items-center gap-2 px-2.5 py-1 rounded bg-theme-chip border border-theme-border">
+            <span className="font-mono text-micro text-theme-text-secondary uppercase">
+              {questions?.length || 0} INQUIRIES
+            </span>
           </div>
         )}
       </div>
 
-      <div className="space-y-2">
-        {questions?.map((q, i) => (
-          <div
-            key={i}
-            onClick={() => setExpanded(expanded === i ? null : i)}
-            className={`
-              cursor-pointer rounded-xl border p-4 transition-all duration-200
-              ${attackMode
-                ? 'border-rose-800/40 hover:border-rose-500/40 hover:bg-rose-500/5'
-                : 'border-slate-800 hover:border-brand-500/30 hover:bg-brand-500/5'
-              }
-              ${expanded === i ? (attackMode ? 'border-rose-500/40 bg-rose-500/5' : 'border-brand-500/30 bg-brand-500/5') : ''}
-            `}
-          >
-            <div className="flex items-start gap-3">
-              <span className={`
-                flex-shrink-0 w-6 h-6 rounded-md flex items-center justify-center text-xs font-bold mt-0.5
-                ${attackMode ? 'bg-rose-500/15 text-rose-300' : 'bg-brand-500/15 text-brand-300'}
-              `}>
-                Q{i + 1}
-              </span>
-              <p className={`text-sm leading-relaxed flex-1 ${attackMode ? 'text-rose-100/90' : 'text-slate-200'}`}>
-                {q}
-              </p>
+      {/* Questions Stack */}
+      <div className="space-y-2.5">
+        {questions?.map((q, i) => {
+          const isExp = expanded === i
+          return (
+            <div
+              key={i}
+              onClick={() => setExpanded(isExp ? null : i)}
+              className={`cursor-pointer rounded-xl border p-4 transition-all duration-200 ${
+                attackMode
+                  ? 'border-theme-error/20 hover:border-theme-error/40 hover:bg-theme-error/5'
+                  : 'border-theme-border hover:border-theme-border-active hover:bg-theme-panel-subtle'
+              } ${
+                isExp
+                  ? attackMode
+                    ? 'border-theme-error/40 bg-theme-error/5 shadow-sm'
+                    : 'border-theme-border-active bg-theme-panel-subtle shadow-sm'
+                  : 'bg-theme-panel'
+              }`}
+            >
+              <div className="flex items-start gap-3">
+                <span
+                  className={`flex-shrink-0 font-mono text-micro font-bold px-2 py-1 rounded mt-0.5 border ${
+                    attackMode
+                      ? 'bg-theme-error/15 border-theme-error/30 text-theme-error'
+                      : 'bg-theme-evidence/10 border-theme-evidence/25 text-theme-evidence'
+                  }`}
+                >
+                  Q-{String(i + 1).padStart(2, '0')}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <p
+                    className={`text-sm leading-relaxed ${
+                      attackMode ? 'text-theme-error font-medium' : 'text-theme-text'
+                    }`}
+                  >
+                    {q}
+                  </p>
+                  {isExp && (
+                    <div className="mt-3 pt-3 border-t border-theme-border flex items-center justify-between text-micro font-mono text-theme-text-muted">
+                      <span>RECOMMENDED DEFENSE STRATEGY</span>
+                      <span className="text-theme-evidence font-bold">PREPARE EMPIRICAL BENCHMARKS</span>
+                    </div>
+                  )}
+                </div>
+                <span className="font-mono text-micro text-theme-text-muted mt-1">
+                  {isExp ? '[-]' : '[+]'}
+                </span>
+              </div>
             </div>
-          </div>
-        ))}
+          )
+        })}
       </div>
 
-      <div className="mt-4 pt-4 border-t border-slate-800">
-        <p className="text-xs text-slate-600 text-center">
-          Practice your answers to these before presenting to the panel
-        </p>
+      <div className="mt-4 pt-3.5 border-t border-theme-border flex items-center justify-between text-micro font-mono text-theme-text-muted">
+        <span>PRE-PANEL REHEARSAL CHECKLIST</span>
+        <span className="text-theme-text-secondary">CLICK ITEM TO REVEAL STRATEGY TAGS</span>
       </div>
     </div>
   )

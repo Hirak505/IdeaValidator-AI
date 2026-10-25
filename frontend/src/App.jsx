@@ -1,4 +1,5 @@
-import { useState } from 'react'
+import { useState, useRef } from 'react'
+import { Routes, Route, Navigate, Link } from 'react-router-dom'
 import UploadZone from './components/UploadZone'
 import LoadingScreen from './components/LoadingScreen'
 import ScoreCard from './components/ScoreCard'
@@ -7,27 +8,37 @@ import JudgeQuestions from './components/JudgeQuestions'
 import RadarChart from './components/RadarChart'
 import ConsensusCard from './components/ConsensusCard'
 import DifferentiationCard from './components/DifferentiationCard'
+import ThemeToggle from './components/ThemeToggle'
+import Navbar from './components/Navbar'
+import SaveEvaluationButton from './components/SaveEvaluationButton'
+import ProtectedRoute from './components/ProtectedRoute'
+import LoginPage from './pages/LoginPage'
+import SignupPage from './pages/SignupPage'
+import DashboardPage from './pages/DashboardPage'
+import HistoryPage from './pages/HistoryPage'
+import EvaluationDetailPage from './pages/EvaluationDetailPage'
+import { useAuth } from './context/AuthContext'
 
 const API_URL = import.meta.env.VITE_API_URL || 'http://localhost:8000'
 
-// Icons
+// Technical Blueprint Icons
 const PresentationIcon = () => (
-  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg className="w-5 h-5 text-theme-evidence" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
       d="M7 12l3-3 3 3 4-4M8 21l4-4 4 4M3 4h18M4 4h16v12a1 1 0 01-1 1H5a1 1 0 01-1-1V4z" />
   </svg>
 )
 
 const MarkdownIcon = () => (
-  <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+  <svg className="w-5 h-5 text-brand-500 dark:text-brand-300" fill="none" viewBox="0 0 24 24" stroke="currentColor">
     <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
       d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4" />
   </svg>
 )
 
 const BoltIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2.5}
       d="M13 10V3L4 14h7v7l9-11h-7z" />
   </svg>
 )
@@ -44,6 +55,26 @@ const DownloadIcon = () => (
   </svg>
 )
 
+const ResearchIcon = () => (
+  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
+      d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
+  </svg>
+)
+
+const CopyIcon = () => (
+  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
+  </svg>
+)
+
+const CheckIcon = () => (
+  <svg className="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+  </svg>
+)
+
 function markdownList(items) {
   return (items || []).map(item => `- ${item}`).join('\n') || '- None provided'
 }
@@ -53,13 +84,12 @@ function buildMarkdownReport(results, attackMode) {
   const consensus = results.consensus || {}
   const diff = chief.differentiation || {}
   const judgeLabels = {
-    innovation: 'Innovation',
-    technical: 'Technical',
-    business: 'Business',
-    presentation: 'Presentation',
+    innovation: 'Innovation & Novelty Specialist',
+    technical: 'Technical Architecture Specialist',
+    business: 'Business Viability Specialist',
+    presentation: 'Presentation & Pitch Specialist',
   }
 
-  // Build specialist reports with evidence
   const specialistReports = Object.entries(judgeLabels).map(([type, label]) => {
     const report = results[type] || {}
     const confLine = report.confidence != null ? ` | **Confidence:** ${report.confidence}%` : ''
@@ -73,130 +103,191 @@ function buildMarkdownReport(results, attackMode) {
       findingsSection = `\n\n### Key Findings\n${findingLines}`
     }
 
-    return `## ${label} Judge\n\n**Score:** ${report.score ?? 'N/A'}/10${confLine}${evidLine}\n\n**Comments:** ${report.comments || 'None provided'}\n\n### Strengths\n${markdownList(report.strengths)}\n\n### Weaknesses\n${markdownList(report.weaknesses)}${findingsSection}`
+    return `## ${label}\n\n**Score:** ${report.score ?? 'N/A'}/10${confLine}${evidLine}\n\n**Comments:** ${report.comments || 'None provided'}\n\n### Strengths\n${markdownList(report.strengths)}\n\n### Weaknesses\n${markdownList(report.weaknesses)}${findingsSection}`
   }).join('\n\n')
 
-  // Build consensus section
   let consensusSection = ''
   if (consensus.mean != null) {
-    consensusSection = `\n## Judge Consensus\n\n**Agreement Level:** ${consensus.agreement_level || 'N/A'}\n**Score Spread:** ${consensus.spread} points (${consensus.min} – ${consensus.max})\n**Most Aligned:** ${judgeLabels[consensus.most_aligned] || consensus.most_aligned}\n**Largest Disagreement:** ${judgeLabels[consensus.largest_disagreement] || consensus.largest_disagreement}\n`
+    consensusSection = `\n## Judge Consensus & Dispersion\n\n**Agreement Level:** ${consensus.agreement_level || 'N/A'}\n**Score Spread:** ${consensus.spread} points (${consensus.min} – ${consensus.max})\n**Most Aligned Dimension:** ${judgeLabels[consensus.most_aligned] || consensus.most_aligned}\n**Largest Disagreement Dimension:** ${judgeLabels[consensus.largest_disagreement] || consensus.largest_disagreement}\n`
   }
 
-  // Build differentiation section
   let diffSection = ''
   if (diff.solution_category && diff.solution_category !== 'Not determined') {
-    diffSection = `\n## Differentiation Analysis\n\n**Category:** ${diff.solution_category}\n`
-    if (diff.differentiation_strengths?.[0] !== 'Not determined') diffSection += `\n**Strengths:**\n${markdownList(diff.differentiation_strengths)}\n`
-    if (diff.differentiation_gaps?.[0] !== 'Not determined') diffSection += `\n**Gaps:**\n${markdownList(diff.differentiation_gaps)}\n`
+    diffSection = `\n## Competitive Differentiation & Moat Analysis\n\n**Category:** ${diff.solution_category}\n`
+    if (diff.differentiation_strengths?.[0] !== 'Not determined') diffSection += `\n**Validated Differentiators:**\n${markdownList(diff.differentiation_strengths)}\n`
+    if (diff.differentiation_gaps?.[0] !== 'Not determined') diffSection += `\n**Defensibility Gaps:**\n${markdownList(diff.differentiation_gaps)}\n`
     if (diff.unsupported_claims?.length > 0) diffSection += `\n**Unsupported Claims:**\n${markdownList(diff.unsupported_claims)}\n`
     if (diff.limitation_note) diffSection += `\n*${diff.limitation_note}*\n`
   }
 
-  // Build prioritized roadmap
   let roadmapSection = ''
   if (chief.prioritized_roadmap?.length > 0) {
     const rows = chief.prioritized_roadmap.map(r =>
       `| ${r.priority} | ${r.title} | ${r.reason || '—'} | ${r.impact} | ${r.effort} |`
     ).join('\n')
-    roadmapSection = `\n## Prioritized Roadmap\n\n| Priority | Action | Reason | Impact | Effort |\n|----------|--------|--------|--------|--------|\n${rows}\n`
+    roadmapSection = `\n## Prioritized Remediation Roadmap\n\n| Priority | Action | Reason | Impact | Effort |\n|----------|--------|--------|--------|--------|\n${rows}\n`
   } else {
     const items = (chief.improvement_roadmap || []).map((step, index) => `${index + 1}. ${step}`).join('\n')
     roadmapSection = `\n### Improvement Roadmap\n${items || '1. None provided'}\n`
   }
 
-  // Confidence line
   const confEvid = []
   if (chief.confidence != null) confEvid.push(`**Confidence:** ${chief.confidence}%`)
   if (chief.evidence_quality != null) confEvid.push(`**Evidence Quality:** ${chief.evidence_quality}%`)
   const confEvidLine = confEvid.length > 0 ? confEvid.join(' | ') + '\n' : ''
 
-  return `# IdeaValidator AI Report\n\nGenerated: ${new Date().toISOString().slice(0, 10)}\nJudge Attack Mode: ${attackMode ? 'Enabled' : 'Disabled'}\n\n## Final Verdict\n\n**Overall Score:** ${chief.overall_score ?? 'N/A'}/10\n${confEvidLine}\n${chief.final_verdict || 'None provided'}\n\n### Top Strengths\n${markdownList(chief.top_strengths)}\n\n### Key Improvements\n${markdownList(chief.top_improvements)}\n${roadmapSection}${consensusSection}${diffSection}\n## Questions For The Team\n\n${markdownList(chief.judge_questions)}\n\n${specialistReports}\n`
+  return `# IdeaValidator AI // Technical Evaluation Memorandum\n\nGenerated: ${new Date().toISOString()}\nExecution Mode: ${attackMode ? 'Adversarial Stress Test (Attack Mode)' : 'Standard Multi-Agent Panel'}\n\n## Executive Verdict\n\n**Overall Index:** ${chief.overall_score ?? 'N/A'}/10.0\n${confEvidLine}\n${chief.final_verdict || 'None provided'}\n\n### Top Strengths\n${markdownList(chief.top_strengths)}\n\n### Critical Deficits\n${markdownList(chief.top_improvements)}\n${roadmapSection}${consensusSection}${diffSection}\n## Defense Questions For The Team\n\n${markdownList(chief.judge_questions)}\n\n${specialistReports}\n`
 }
 
 function Toggle({ enabled, onToggle, label, sublabel }) {
   return (
     <div
-      className={`
-        group relative flex items-center gap-4 p-4 rounded-xl border cursor-pointer transition-all duration-200
-        ${enabled
-          ? 'border-rose-500/40 bg-rose-500/8 shadow-lg shadow-rose-500/10'
-          : 'border-slate-700/60 hover:border-slate-600'
-        }
-      `}
       onClick={onToggle}
+      className={`group relative flex items-center justify-between p-4 rounded-xl border cursor-pointer transition-all duration-200 select-none ${
+        enabled
+          ? 'border-theme-error/40 bg-theme-error/10 shadow-sm'
+          : 'border-theme-border bg-theme-panel hover:border-theme-border-active hover:bg-theme-panel-subtle'
+      }`}
     >
-      <div className="flex-1">
+      <div className="flex-1 pr-4">
         <div className="flex items-center gap-2">
-          <span className="text-base">{enabled ? '⚡' : '🎯'}</span>
-          <p className={`text-sm font-semibold transition-colors ${enabled ? 'text-rose-200' : 'text-slate-300'}`}>
+          <span className={`w-2 h-2 rounded-full ${enabled ? 'bg-theme-error animate-ping' : 'bg-theme-text-muted'}`} />
+          <p className={`text-xs font-mono font-bold uppercase tracking-wider ${enabled ? 'text-theme-error' : 'text-theme-text'}`}>
             {label}
           </p>
         </div>
-        <p className="text-xs text-slate-500 mt-0.5 ml-6">{sublabel}</p>
+        <p className="text-micro text-theme-text-secondary font-mono mt-1 pl-4">
+          {sublabel}
+        </p>
       </div>
-      <div className={`
-        relative w-11 h-6 rounded-full transition-all duration-300 flex-shrink-0
-        ${enabled ? 'bg-rose-500' : 'bg-slate-700'}
-      `}>
-        <div className={`
-          absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all duration-300
-          ${enabled ? 'left-6' : 'left-1'}
-        `} />
+      <div className={`relative w-11 h-6 rounded-full transition-all duration-300 flex-shrink-0 p-0.5 border ${
+        enabled ? 'bg-theme-error/30 border-theme-error' : 'bg-theme-chip border-theme-border'
+      }`}>
+        <div className={`w-4.5 h-4.5 rounded-full transition-all duration-300 shadow-sm ${
+          enabled ? 'translate-x-5 bg-theme-error' : 'translate-x-0 bg-theme-text-muted'
+        }`} />
       </div>
     </div>
   )
 }
 
 function ErrorBanner({ message, onDismiss }) {
+  const isDailyQuota = typeof message === 'string' && (
+    message.toLowerCase().includes('daily') && (message.toLowerCase().includes('quota') || message.toLowerCase().includes('limit'))
+  )
+  const isRateLimit = typeof message === 'string' && (
+    !isDailyQuota && (message.toLowerCase().includes('rate limit') || message.toLowerCase().includes('rpm'))
+  )
+
   return (
-    <div className="flex items-start gap-3 p-4 rounded-xl bg-rose-500/10 border border-rose-500/30 animate-slide-up">
-      <span className="text-rose-400 text-lg flex-shrink-0">✕</span>
+    <div className={`flex items-start gap-3 p-4 rounded-xl animate-slide-up border ${
+      isDailyQuota
+        ? 'bg-amber-500/10 border-amber-500/30'
+        : 'bg-theme-error/10 border-theme-error/30'
+    }`}>
+      <span className={`font-mono font-bold text-sm mt-0.5 ${
+        isDailyQuota ? 'text-amber-500' : 'text-theme-error'
+      }`}>
+        {isDailyQuota ? '[QUOTA]' : isRateLimit ? '[RPM]' : '[ERR]'}
+      </span>
       <div className="flex-1 min-w-0">
-        <p className="text-sm font-semibold text-rose-300 mb-0.5">Evaluation failed</p>
-        <p className="text-sm text-rose-300/70 leading-relaxed">{message}</p>
+        <div className="flex items-center gap-2 mb-1 flex-wrap">
+          <p className={`text-xs font-mono font-bold uppercase tracking-wider ${
+            isDailyQuota ? 'text-amber-500' : 'text-theme-error'
+          }`}>
+            {isDailyQuota
+              ? 'Daily API Quota Exhausted'
+              : isRateLimit
+              ? 'Temporary Rate Limit Reached'
+              : 'Evaluation Protocol Halted'}
+          </p>
+          {isDailyQuota && (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-amber-500/20 text-amber-600 dark:text-amber-400 font-semibold uppercase">
+              Daily Limit
+            </span>
+          )}
+        </div>
+        <p className="text-xs text-theme-text font-mono leading-relaxed">{message}</p>
+        {isDailyQuota && (
+          <p className="text-[11px] font-mono text-theme-text-secondary mt-2 bg-theme-panel/60 p-2 rounded border border-theme-border">
+            💡 <strong className="text-theme-text">Tip:</strong> Change <code className="text-theme-evidence font-bold">GEMINI_MODEL</code> in <code className="text-theme-evidence">backend/.env</code> (e.g. <code className="text-theme-evidence">gemini-1.5-flash</code>, <code className="text-theme-evidence">gemini-2.0-flash</code>, or <code className="text-theme-evidence">gemini-2.5-flash</code>) to resume without waiting for daily reset.
+          </p>
+        )}
       </div>
-      <button onClick={onDismiss} className="text-rose-400/50 hover:text-rose-400 flex-shrink-0">
-        <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-        </svg>
+      <button onClick={onDismiss} type="button" className="text-theme-text-muted hover:text-theme-text font-mono text-xs p-1">
+        ✕
       </button>
     </div>
   )
 }
 
-// ---- Mythos Research Icons ----
-const ResearchIcon = () => (
-  <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5}
-      d="M21 21l-4.35-4.35M11 19a8 8 0 100-16 8 8 0 000 16z" />
-  </svg>
-)
-
-const CopyIcon = () => (
-  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-      d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z" />
-  </svg>
-)
-
-const CheckIcon = () => (
-  <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-  </svg>
-)
-
-// ---- MythosSection component ----
+// Deep Market Reconnaissance Component
 function MythosSection({ pitchDeck, readme, onResearchReady }) {
-  const [step, setStep] = useState('idle') // idle | generating | prompt | importing | done | error
+  const [step, setStep] = useState('idle')
   const [requestId, setRequestId] = useState(null)
-  const [authToken, setAuthToken] = useState(null)  // kept in memory only, never logged
+  const [authToken, setAuthToken] = useState(null)
   const [researchPrompt, setResearchPrompt] = useState('')
+  const [statusMessage, setStatusMessage] = useState('')
   const [jsonInput, setJsonInput] = useState('')
   const [copied, setCopied] = useState(false)
   const [importError, setImportError] = useState(null)
   const [competitorCount, setCompetitorCount] = useState(0)
 
   const canGenerate = pitchDeck || readme
+
+  const handleAutomate = async () => {
+    setStep('automating')
+    setImportError(null)
+    setStatusMessage('Initiating automated research pipeline via Agent37 Mythos...')
+    const formData = new FormData()
+    if (pitchDeck) formData.append('pitch_deck', pitchDeck)
+    if (readme) formData.append('readme', readme)
+
+    try {
+      const res = await fetch(`${API_URL}/research/auto`, { method: 'POST', body: formData })
+      const data = await res.json()
+      if (!res.ok) throw new Error(data.detail || 'Failed to start automated research.')
+
+      const rid = data.request_id
+      setRequestId(rid)
+      if (data.research_prompt) setResearchPrompt(data.research_prompt)
+
+      let attempts = 0
+      const pollInterval = setInterval(async () => {
+        attempts++
+        if (attempts > 5) {
+          setStatusMessage('Synthesizing competitor evidence and market whitespace...')
+        }
+        try {
+          const statusRes = await fetch(`${API_URL}/research/status/${rid}`)
+          if (!statusRes.ok) {
+            clearInterval(pollInterval)
+            throw new Error('Failed to check research status.')
+          }
+          const statusData = await statusRes.json()
+
+          if (statusData.status === 'completed') {
+            clearInterval(pollInterval)
+            setCompetitorCount(statusData.competitor_count || 0)
+            setStep('done')
+            onResearchReady(rid)
+          } else if (statusData.status === 'failed') {
+            clearInterval(pollInterval)
+            setImportError(statusData.error || 'Automated research encountered an error.')
+            if (statusData.research_prompt) setResearchPrompt(statusData.research_prompt)
+            setStep('prompt')
+          }
+        } catch (pollErr) {
+          clearInterval(pollInterval)
+          setImportError(pollErr.message)
+          setStep('prompt')
+        }
+      }, 2000)
+    } catch (err) {
+      setImportError(err.message)
+      setStep('error')
+    }
+  }
 
   const handleGenerate = async () => {
     setStep('generating')
@@ -207,9 +298,9 @@ function MythosSection({ pitchDeck, readme, onResearchReady }) {
     try {
       const res = await fetch(`${API_URL}/research/request`, { method: 'POST', body: formData })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Failed to create research request.')
+      if (!res.ok) throw new Error(data.detail || 'Failed to generate prompt specification.')
       setRequestId(data.request_id)
-      setAuthToken(data.auth_token)   // held in component state, never surfaced in the prompt
+      setAuthToken(data.auth_token)
       setResearchPrompt(data.research_prompt)
       setStep('prompt')
     } catch (err) {
@@ -219,26 +310,33 @@ function MythosSection({ pitchDeck, readme, onResearchReady }) {
   }
 
   const handleCopy = () => {
-    navigator.clipboard.writeText(researchPrompt).then(() => {
-      setCopied(true)
-      setTimeout(() => setCopied(false), 2000)
-    })
+    navigator.clipboard.writeText(researchPrompt)
+    setCopied(true)
+    setTimeout(() => setCopied(false), 2000)
   }
 
   const handleImport = async () => {
     setImportError(null)
     setStep('importing')
     try {
-      const formData = new FormData()
-      formData.append('request_id', requestId)
-      formData.append('research_json', jsonInput.trim())
-      const res = await fetch(`${API_URL}/research/import`, {
+      let parsed
+      try {
+        parsed = JSON.parse(jsonInput)
+      } catch (e) {
+        throw new Error('Invalid JSON format. Check brackets and quotes.')
+      }
+
+      const res = await fetch(`${API_URL}/research/callback`, {
         method: 'POST',
-        headers: { 'Authorization': `Bearer ${authToken}` },
-        body: formData,
+        headers: {
+          'Content-Type': 'application/json',
+          ...(authToken ? { Authorization: `Bearer ${authToken}` } : {}),
+        },
+        body: JSON.stringify(parsed),
       })
       const data = await res.json()
-      if (!res.ok) throw new Error(data.detail || 'Import failed.')
+      if (!res.ok) throw new Error(data.detail || 'Validation error while ingesting research dataset.')
+
       setCompetitorCount(data.competitor_count || 0)
       setStep('done')
       onResearchReady(requestId)
@@ -248,160 +346,192 @@ function MythosSection({ pitchDeck, readme, onResearchReady }) {
     }
   }
 
+  if (step === 'done') {
+    return (
+      <div className="flex items-center justify-between p-4 rounded-xl border border-theme-positive/40 bg-theme-positive/10">
+        <div className="flex items-center gap-2 text-theme-positive">
+          <span className="font-mono text-sm font-bold">[RECON VERIFIED]</span>
+          <span className="font-mono text-xs">
+            Grounding active: {competitorCount} competitor entities ingested into synthesis buffer.
+          </span>
+        </div>
+        <button
+          onClick={() => {
+            setStep('idle')
+            setRequestId(null)
+            onResearchReady(null)
+          }}
+          type="button"
+          className="text-micro font-mono text-theme-positive hover:underline ml-4"
+        >
+          Detach
+        </button>
+      </div>
+    )
+  }
+
   if (step === 'idle' || step === 'error') {
     return (
-      <div className="rounded-xl border border-slate-700/60 bg-surface-900/60 p-4">
-        <div className="flex items-center gap-3 mb-3">
-          <span className="text-lg">🔍</span>
-          <div>
-            <p className="text-sm font-semibold text-slate-200">Market Research with Mythos</p>
-            <p className="text-xs text-slate-500 mt-0.5">Use Agent37 Mythos to research competitors and enrich your evaluation.</p>
-          </div>
+      <div className="space-y-2">
+        <div className="flex gap-2">
+          <button
+            onClick={handleAutomate}
+            disabled={!canGenerate}
+            type="button"
+            id="mythos-automate-btn"
+            className={`flex-1 flex items-center justify-center gap-2 py-3 px-4 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all duration-200 ${
+              canGenerate
+                ? 'border-theme-evidence/40 bg-theme-evidence/10 text-theme-evidence hover:bg-theme-evidence/20 shadow-sm cursor-pointer'
+                : 'border-theme-border bg-theme-panel text-theme-text-muted cursor-not-allowed opacity-60'
+            }`}
+          >
+            <ResearchIcon />
+            <span>Agent37 Deep Market Recon (Automated)</span>
+          </button>
+          <button
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            type="button"
+            id="mythos-manual-btn"
+            title="Manual Prompt Specification Workflow"
+            className={`px-3 py-3 rounded-xl border text-xs font-mono font-bold uppercase tracking-wider transition-all ${
+              canGenerate
+                ? 'border-theme-border bg-theme-panel hover:bg-theme-panel-subtle text-theme-text-secondary hover:text-theme-text cursor-pointer'
+                : 'border-theme-border bg-theme-panel text-theme-text-muted cursor-not-allowed opacity-60'
+            }`}
+          >
+            Manual
+          </button>
         </div>
         {step === 'error' && importError && (
-          <p className="text-xs text-rose-400 mb-3">{importError}</p>
+          <p className="text-micro font-mono text-theme-error pl-1">[ERR] {importError}</p>
         )}
-        <button
-          onClick={handleGenerate}
-          disabled={!canGenerate}
-          id="mythos-generate-btn"
-          className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors
-            ${canGenerate
-              ? 'bg-indigo-600/30 border border-indigo-500/50 text-indigo-300 hover:bg-indigo-500/30 hover:border-indigo-400/60'
-              : 'bg-slate-800 border border-slate-700 text-slate-600 cursor-not-allowed'}`}
-        >
-          <ResearchIcon />
-          Generate Mythos Research Prompt
-        </button>
-        {!canGenerate && <p className="text-center text-xs text-slate-600 mt-2">Upload a file first to generate a research prompt.</p>}
+      </div>
+    )
+  }
+
+  if (step === 'automating') {
+    return (
+      <div className="p-4 rounded-xl border border-theme-border bg-theme-panel animate-pulse space-y-2">
+        <div className="flex items-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-theme-evidence animate-ping" />
+          <p className="text-xs font-mono font-bold uppercase tracking-wider text-theme-evidence">
+            Agent37 Deep Market Recon Active
+          </p>
+        </div>
+        <p className="text-micro text-theme-text-secondary font-mono pl-4">
+          {statusMessage}
+        </p>
       </div>
     )
   }
 
   if (step === 'generating') {
     return (
-      <div className="rounded-xl border border-slate-700/60 bg-surface-900/60 p-4 flex items-center gap-3">
-        <div className="w-4 h-4 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
-        <p className="text-sm text-slate-400">Generating research prompt…</p>
+      <div className="p-4 rounded-xl border border-theme-border bg-theme-panel animate-pulse">
+        <p className="text-xs font-mono text-theme-text-secondary uppercase">
+          Synthesizing Research Prompt Specification...
+        </p>
       </div>
     )
   }
 
-  if (step === 'done') {
-    return (
-      <div className="rounded-xl border border-emerald-500/30 bg-emerald-500/5 p-4">
-        <div className="flex items-center gap-2 mb-1">
-          <span className="text-emerald-400"><CheckIcon /></span>
-          <p className="text-sm font-semibold text-emerald-300">Research imported — {competitorCount} competitor{competitorCount !== 1 ? 's' : ''} loaded</p>
-        </div>
-        <p className="text-xs text-slate-500">Your next evaluation will include this market research context.</p>
-      </div>
-    )
-  }
-
-  // step === 'prompt' | 'importing'
   return (
-    <div className="rounded-xl border border-indigo-500/30 bg-surface-900/60 p-4 space-y-4">
-      <div className="flex items-center gap-2">
-        <span className="text-lg">🔍</span>
-        <p className="text-sm font-semibold text-indigo-200">Mythos Research Prompt</p>
-      </div>
-
-      <div className="relative">
-        <pre className="text-xs text-slate-400 bg-surface-950 rounded-lg p-3 overflow-auto max-h-40 whitespace-pre-wrap border border-slate-800">
-          {researchPrompt}
-        </pre>
-        <button
-          onClick={handleCopy}
-          id="mythos-copy-btn"
-          className="absolute top-2 right-2 flex items-center gap-1 px-2 py-1 rounded-md text-xs bg-slate-800 border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 transition-colors"
-        >
-          {copied ? <><CheckIcon /> Copied!</> : <><CopyIcon /> Copy</>}
-        </button>
-      </div>
-
-      <p className="text-xs text-slate-500">
-        📋 Copy the prompt above → paste into <strong className="text-slate-300">Agent37 Mythos</strong> → paste the returned JSON below.
-      </p>
-
-      <div>
-        <label className="block text-xs font-medium text-slate-400 mb-1.5">Paste Mythos JSON Response</label>
-        <textarea
-          id="mythos-json-input"
-          className="w-full h-32 bg-surface-950 border border-slate-700 rounded-lg p-3 text-xs text-slate-300 font-mono resize-none focus:outline-none focus:border-indigo-500/60 transition-colors"
-          placeholder='{"schema_version": "1.0", "request_id": "...", ...}'
-          value={jsonInput}
-          onChange={e => setJsonInput(e.target.value)}
-        />
+    <div className="bp-panel p-4 rounded-xl border border-theme-border space-y-3">
+      <div className="flex items-center justify-between pb-2 border-b border-theme-border">
+        <span className="section-label">AGENT37 GROUNDING PROTOCOL</span>
+        <span className="font-mono text-micro text-theme-text-muted">REQ ID: {requestId?.slice(0, 8)}...</span>
       </div>
 
       {importError && (
-        <p className="text-xs text-rose-400">{importError}</p>
-      )}
-
-      <button
-        onClick={handleImport}
-        disabled={!jsonInput.trim() || step === 'importing'}
-        id="mythos-import-btn"
-        className={`w-full flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-medium transition-colors
-          ${jsonInput.trim() && step !== 'importing'
-            ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-            : 'bg-slate-800 text-slate-600 cursor-not-allowed'}`}
-      >
-        {step === 'importing'
-          ? <><div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" /> Importing…</>
-          : 'Import Research'
-        }
-      </button>
-    </div>
-  )
-}
-
-// ---- CompetitorCard component ----
-function CompetitorCard({ competitor }) {
-  return (
-    <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-3">
-      <p className="text-sm font-semibold text-indigo-200 mb-1">{competitor.name}</p>
-      <p className="text-xs text-slate-400 mb-2">{competitor.description}</p>
-      {competitor.differentiation && (
-        <p className="text-xs text-slate-500 italic mb-2">vs. your idea: {competitor.differentiation}</p>
-      )}
-      {competitor.source_urls?.length > 0 && (
-        <div className="flex flex-wrap gap-1.5 mt-1">
-          {competitor.source_urls.map((url, i) => (
-            <a
-              key={i}
-              href={url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-xs text-indigo-400 hover:text-indigo-300 underline underline-offset-2 transition-colors"
-            >
-              Source {i + 1}
-            </a>
-          ))}
+        <div className="p-2 rounded bg-theme-error/10 text-theme-error font-mono text-micro">
+          [ERR] {importError}
         </div>
       )}
+
+      <div>
+        <label className="block text-micro font-mono uppercase text-theme-text-secondary mb-1">
+          Market Intelligence Extraction Prompt
+        </label>
+        <div className="relative">
+          <textarea
+            readOnly
+            value={researchPrompt}
+            className="w-full h-24 bg-theme-panel border border-theme-border rounded-lg p-2.5 text-micro text-theme-text font-mono resize-none focus:outline-none"
+          />
+        </div>
+        <button
+          onClick={handleCopy}
+          type="button"
+          className="mt-1 flex items-center gap-1.5 text-micro font-mono text-theme-evidence hover:underline"
+        >
+          {copied ? <CheckIcon /> : <CopyIcon />}
+          <span>{copied ? 'Copied Specification' : 'Copy Prompt Specification'}</span>
+        </button>
+      </div>
+
+      <div>
+        <label className="block text-micro font-mono uppercase text-theme-text-secondary mb-1">
+          Ingest Mythos Schema Response (JSON)
+        </label>
+        <textarea
+          id="mythos-json-input"
+          className="w-full h-24 bg-theme-panel border border-theme-border rounded-lg p-2.5 text-micro text-theme-text font-mono resize-none focus:outline-none focus:border-theme-border-active"
+          placeholder='{"schema_version": "1.0", "request_id": "...", "competitors": [...]}'
+          value={jsonInput}
+          onChange={(e) => setJsonInput(e.target.value)}
+        />
+      </div>
+
+      <div className="flex gap-2">
+        <button
+          onClick={handleImport}
+          disabled={!jsonInput.trim() || step === 'importing'}
+          type="button"
+          id="mythos-import-btn"
+          className={`flex-1 flex items-center justify-center gap-2 py-2 rounded-lg text-xs font-mono font-bold uppercase tracking-wider transition-all ${
+            jsonInput.trim() && step !== 'importing'
+              ? 'bg-theme-evidence text-white dark:text-ink-950 hover:opacity-90 shadow-sm'
+              : 'bg-theme-chip text-theme-text-muted cursor-not-allowed border border-theme-border'
+          }`}
+        >
+          {step === 'importing' ? 'Ingesting Schema Data...' : 'Import Recon Data'}
+        </button>
+        <button
+          onClick={handleAutomate}
+          disabled={!canGenerate}
+          type="button"
+          title="Retry automated recon"
+          className="px-3 py-2 rounded-lg text-xs font-mono bg-theme-chip hover:bg-theme-panel text-theme-text border border-theme-border"
+        >
+          ↺ Retry Auto
+        </button>
+      </div>
     </div>
   )
 }
 
-export default function App() {
+// Studio Component (Intake + Live Session Results View)
+function Studio() {
   const [pitchDeck, setPitchDeck] = useState(null)
   const [readme, setReadme] = useState(null)
   const [attackMode, setAttackMode] = useState(false)
   const [loading, setLoading] = useState(false)
   const [results, setResults] = useState(null)
   const [error, setError] = useState(null)
-  // Mythos research state
+  const [evalStage, setEvalStage] = useState(null)
   const [researchRequestId, setResearchRequestId] = useState(null)
 
+  const isSubmittingRef = useRef(false)
   const canEvaluate = pitchDeck || readme
 
   const handleEvaluate = async () => {
-    if (!canEvaluate) return
+    if (!canEvaluate || loading || isSubmittingRef.current) return
+    isSubmittingRef.current = true
     setError(null)
     setLoading(true)
     setResults(null)
+    setEvalStage('Specialist Judges')
 
     const formData = new FormData()
     if (pitchDeck) formData.append('pitch_deck', pitchDeck)
@@ -410,26 +540,72 @@ export default function App() {
     if (researchRequestId) formData.append('research_request_id', researchRequestId)
 
     try {
-      const res = await fetch(`${API_URL}/evaluate`, {
+      const asyncRes = await fetch(`${API_URL}/evaluate/async`, {
         method: 'POST',
         body: formData,
       })
 
-      const data = await res.json()
+      if (asyncRes.status === 202) {
+        const asyncData = await asyncRes.json()
+        const jobId = asyncData.job_id
+        if (!jobId) throw new Error(asyncData.detail || 'Failed to initialize evaluation job.')
+        if (asyncData.stage) setEvalStage(asyncData.stage)
 
-      if (!res.ok) {
-        throw new Error(data.detail || `Server error (${res.status})`)
+        await new Promise((resolve, reject) => {
+          const pollInterval = setInterval(async () => {
+            try {
+              const statusRes = await fetch(`${API_URL}/evaluate/status/${jobId}`)
+              if (!statusRes.ok) {
+                clearInterval(pollInterval)
+                let errMsg = `Status check failed (${statusRes.status})`
+                try {
+                  const errPayload = await statusRes.json()
+                  if (errPayload && (errPayload.detail || errPayload.error)) {
+                    errMsg = errPayload.detail || errPayload.error
+                  }
+                } catch (_) {}
+                reject(new Error(errMsg))
+                return
+              }
+              const statusData = await statusRes.json()
+              if (statusData.stage) setEvalStage(statusData.stage)
+
+              if (statusData.status === 'completed') {
+                clearInterval(pollInterval)
+                setResults(statusData.results)
+                resolve()
+              } else if (statusData.status === 'failed') {
+                clearInterval(pollInterval)
+                reject(new Error(statusData.detail || statusData.error || 'Evaluation failed.'))
+              }
+            } catch (pollErr) {
+              clearInterval(pollInterval)
+              reject(pollErr)
+            }
+          }, 1500)
+        })
+      } else if (asyncRes.status === 409) {
+        const conflictData = await asyncRes.json().catch(() => ({}))
+        throw new Error(conflictData.detail || 'An evaluation is already running.')
+      } else if (asyncRes.status === 404) {
+        const res = await fetch(`${API_URL}/evaluate`, { method: 'POST', body: formData })
+        const data = await res.json()
+        if (!res.ok) throw new Error(data.detail || `Server error (${res.status})`)
+        setResults(data)
+      } else {
+        const errData = await asyncRes.json().catch(() => ({}))
+        throw new Error(errData.detail || `Evaluation request failed (${asyncRes.status})`)
       }
-
-      setResults(data)
     } catch (err) {
       if (err.name === 'TypeError' && err.message.includes('fetch')) {
-        setError('Cannot connect to the backend. Make sure it is running on http://localhost:8000')
+        setError('Cannot connect to backend service at http://localhost:8000')
       } else {
-        setError(err.message || 'An unexpected error occurred.')
+        setError(err.message || 'An unexpected evaluation error occurred.')
       }
     } finally {
+      isSubmittingRef.current = false
       setLoading(false)
+      setEvalStage(null)
     }
   }
 
@@ -440,86 +616,112 @@ export default function App() {
     setReadme(null)
     setAttackMode(false)
     setResearchRequestId(null)
+    setEvalStage(null)
   }
 
   const handleDownloadReport = () => {
-    const report = new Blob([buildMarkdownReport(results, attackMode)], { type: 'text/markdown;charset=utf-8' })
+    const report = new Blob([buildMarkdownReport(results, attackMode)], {
+      type: 'text/markdown;charset=utf-8',
+    })
     const url = URL.createObjectURL(report)
     const link = document.createElement('a')
     link.href = url
-    link.download = 'ideavalidator-ai-report.md'
+    link.download = `IdeaValidator-AI-Memorandum-${new Date().toISOString().slice(0, 10)}.md`
     document.body.appendChild(link)
     link.click()
     link.remove()
     URL.revokeObjectURL(url)
   }
 
-  if (loading) return <LoadingScreen attackMode={attackMode} />
+  if (loading) return <LoadingScreen attackMode={attackMode} stage={evalStage} />
 
+  // Evaluation Results Dashboard View
   if (results) {
     return (
-      <div className="min-h-screen bg-surface-950 bg-grid">
-        <div className="max-w-5xl mx-auto px-4 py-8">
-          {/* Results Header */}
-          <div className="flex items-center justify-between mb-8 animate-fade-in">
-            <div>
-              <div className="flex items-center gap-2 mb-1">
-                <div className="w-2 h-2 rounded-full bg-emerald-400" />
-                <span className="text-xs font-medium text-emerald-400 uppercase tracking-widest">Evaluation Complete</span>
+      <div className="min-h-screen bg-theme-bg bp-grid text-theme-text flex flex-col transition-colors duration-200">
+        {/* Top Navigation & Telemetry Bar */}
+        <header className="border-b border-theme-border bg-theme-panel/90 backdrop-blur-md sticky top-0 z-30 transition-colors duration-200">
+          <div className="max-w-6xl mx-auto px-4 py-3 flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+            <div className="flex items-center gap-3">
+              <div className="w-7 h-7 rounded bg-theme-evidence/15 border border-theme-evidence/30 flex items-center justify-center font-mono font-bold text-xs text-theme-evidence">
+                ⚖
               </div>
-              <h1 className="text-2xl font-bold text-white">
-                <span className="text-gradient">IdeaValidator AI</span> — Results
-              </h1>
+              <div className="flex items-baseline gap-2">
+                <span className="font-bold text-sm tracking-tight text-theme-text">
+                  IDEAVALIDATOR
+                </span>
+                <span className="font-mono text-micro text-theme-text-muted uppercase">
+                  // ARBITRATION DOSSIER
+                </span>
+              </div>
             </div>
-            <button
-              onClick={handleReset}
-              className="flex items-center gap-2 px-4 py-2 rounded-lg border border-slate-700 text-slate-400 hover:text-white hover:border-slate-500 transition-colors text-sm"
-            >
-              <ArrowLeftIcon />
-              Evaluate another
-            </button>
-          </div>
 
-          {/* Overall Score */}
-          <div className="mb-6">
+            <div className="flex items-center gap-2.5 flex-wrap">
+              {/* Save Evaluation Button (Hybrid: Auth prompt or Direct Save) */}
+              <SaveEvaluationButton
+                results={results}
+                attackMode={attackMode}
+                pitchDeck={pitchDeck}
+                readme={readme}
+                researchAssisted={Boolean(researchRequestId)}
+              />
+
+              <button
+                onClick={handleDownloadReport}
+                type="button"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-theme-border bg-theme-panel-subtle hover:border-theme-border-active text-xs font-mono text-theme-text-secondary hover:text-theme-text transition-colors"
+              >
+                <DownloadIcon />
+                <span>EXPORT .MD</span>
+              </button>
+
+              <button
+                onClick={handleReset}
+                type="button"
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-theme-border bg-theme-panel-subtle hover:border-theme-border-active text-xs font-mono text-theme-evidence transition-colors"
+              >
+                <ArrowLeftIcon />
+                <span>NEW EVALUATION</span>
+              </button>
+
+              <ThemeToggle />
+            </div>
+          </div>
+        </header>
+
+        {/* Main Dashboard Container */}
+        <main className="flex-1 max-w-6xl w-full mx-auto px-4 py-8 space-y-6">
+          {/* Executive Overall Score */}
+          <section id="executive-verdict">
             <OverallScore data={results.chief_judge} attackMode={attackMode} />
-          </div>
+          </section>
 
-          {/* Research-assisted badge */}
+          {/* Research Assisted Banner */}
           {results.research_assisted && (
-            <div className="mb-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-indigo-500/10 border border-indigo-500/25 w-fit">
-              <span className="text-xs">🔍</span>
-              <span className="text-xs font-medium text-indigo-300">Evaluation includes Mythos market research</span>
-            </div>
-          )}
-
-          {/* Competitor Cards (if research assisted) */}
-          {results.research_assisted && results.chief_judge?.differentiation && (
-            <div className="mb-6">
-              <p className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-3">External Market Research</p>
-              <div className="grid sm:grid-cols-2 gap-3">
-                {/* We surface competitor context from the differentiation block */}
-                <div className="rounded-lg border border-indigo-500/20 bg-indigo-500/5 p-3 text-xs text-slate-400 italic">
-                  Competitor research was used by Mythos and assessed by the Innovation and Business judges.
-                  Sources are preserved in their source_urls fields per the v1.0 research schema.
-                </div>
+            <div className="flex items-center justify-between p-3 rounded-xl bg-theme-evidence/10 border border-theme-evidence/30 text-xs font-mono">
+              <div className="flex items-center gap-2 text-theme-evidence">
+                <span>🔍</span>
+                <span>AGENT37 MARKET RECON BOUND TO DELIBERATION DATASET</span>
               </div>
+              <span className="text-theme-text-muted text-micro">GROUNDED COMPETITOR SENSING</span>
             </div>
           )}
 
-          {/* Radar + Consensus */}
-          <div className="grid sm:grid-cols-2 gap-4 mb-6">
-            <RadarChart scores={{
-              innovation: results.innovation?.score,
-              technical: results.technical?.score,
-              business: results.business?.score,
-              presentation: results.presentation?.score,
-            }} />
+          {/* Radar Chart + Consensus Analysis Matrix */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <RadarChart
+              scores={{
+                innovation: results.innovation?.score,
+                technical: results.technical?.score,
+                business: results.business?.score,
+                presentation: results.presentation?.score,
+              }}
+            />
             <ConsensusCard consensus={results.consensus} />
           </div>
 
-          {/* Differentiation + Questions */}
-          <div className="grid sm:grid-cols-2 gap-4 mb-6">
+          {/* Differentiation & Moat + Judge Interrogation Questions */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
             <DifferentiationCard data={results.chief_judge?.differentiation} />
             <JudgeQuestions
               questions={results.chief_judge?.judge_questions}
@@ -527,166 +729,215 @@ export default function App() {
             />
           </div>
 
-          {/* Individual Judge Cards */}
-          <div className="mb-4">
-            <p className="text-xs font-medium text-slate-500 uppercase tracking-widest mb-4">Judge Reports</p>
-            <div className="grid sm:grid-cols-2 gap-4">
-              {['innovation', 'technical', 'business', 'presentation'].map(type => (
+          {/* Specialist Detailed Audit Cards */}
+          <section className="space-y-4 pt-4">
+            <div className="flex items-center justify-between pb-2 border-b border-theme-border">
+              <span className="section-label">SPECIALIST PANELS // GRANULAR AUDIT REPORTS</span>
+              <span className="font-mono text-micro text-theme-text-muted">4 INDEPENDENT AGENTS</span>
+            </div>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {['innovation', 'technical', 'business', 'presentation'].map((type) => (
                 <ScoreCard key={type} type={type} data={results[type]} />
               ))}
             </div>
-          </div>
+          </section>
+        </main>
 
-          {/* Footer */}
-          <div className="flex items-center justify-between gap-4 mt-8 pb-8">
-            <button
-              onClick={handleDownloadReport}
-              className="flex items-center gap-2 px-3 py-2 rounded-lg border border-slate-700 text-slate-400 hover:text-white hover:border-brand-500/60 transition-colors text-sm"
-            >
-              <DownloadIcon />
-              Download Markdown
-            </button>
-            <p className="text-right text-xs text-slate-700">
-              IdeaValidator AI · Evidence-grounded evaluation powered by Gemini
-            </p>
+        {/* Studio Footer */}
+        <footer className="border-t border-theme-border py-6 px-4 bg-theme-panel">
+          <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 font-mono text-micro text-theme-text-muted">
+            <span>IDEAVALIDATOR AI // ENGINEERING STUDIO v2.4</span>
+            <span>AUTONOMOUS MULTI-AGENT GROUNDING ENGINE</span>
           </div>
-        </div>
+        </footer>
       </div>
     )
   }
 
-  // Landing page
+  // Intake Workbench Landing View
   return (
-    <div className="min-h-screen bg-surface-950 bg-grid flex flex-col">
-      {/* Nav */}
-      <nav className="border-b border-slate-800/60 px-4 py-4">
-        <div className="max-w-4xl mx-auto flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-brand-500 to-accent-cyan flex items-center justify-center text-sm">
-              ⚖️
+    <div className="min-h-screen bg-theme-bg bp-grid text-theme-text flex flex-col justify-between transition-colors duration-200">
+      {/* Shared Navigation Bar with Auth Links */}
+      <Navbar />
+
+      {/* Main Intake Section */}
+      <main className="flex-1 max-w-4xl w-full mx-auto px-4 py-12 flex flex-col items-center justify-center">
+        <div className="w-full max-w-2xl animate-fade-in">
+          {/* Header Title & Swiss Typography */}
+          <div className="text-center mb-8">
+            <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-theme-chip border border-theme-border font-mono text-micro text-theme-evidence mb-4">
+              <span>● MULTI-AGENT ASYNCHRONOUS EVALUATION</span>
             </div>
-            <span className="font-semibold text-white text-sm tracking-tight">IdeaValidator AI</span>
-          </div>
-          <div className="flex items-center gap-1.5 text-xs text-slate-500">
-            <div className="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-pulse" />
-            Powered by Gemini
-          </div>
-        </div>
-      </nav>
-
-      {/* Hero */}
-      <div className="flex-1 flex flex-col items-center justify-center px-4 py-12">
-        <div className="max-w-2xl w-full animate-fade-in">
-          {/* Badge */}
-          <div className="flex justify-center mb-6">
-            <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full bg-brand-500/10 border border-brand-500/20">
-              <span className="text-xs">🏆</span>
-              <span className="text-xs font-medium text-brand-300">AI-Powered Hackathon Evaluation</span>
-            </div>
+            <h1 className="text-3xl sm:text-4xl font-extrabold text-theme-text tracking-tight leading-tight mb-3">
+              Stress-test your startup before <br />
+              <span className="text-gradient">the investment panel does.</span>
+            </h1>
+            <p className="text-theme-text-secondary text-sm max-w-lg mx-auto font-sans leading-relaxed">
+              Upload your pitch deck or technical specification. Four specialist AI judges evaluate your thesis independently before a Chief Justice synthesizes the executive verdict.
+            </p>
           </div>
 
-          {/* Headline */}
-          <h1 className="text-4xl sm:text-5xl font-bold text-white text-center leading-tight mb-4">
-            Get judged before<br />
-            <span className="text-gradient">the judges judge you.</span>
-          </h1>
-          <p className="text-center text-slate-400 text-lg mb-10 max-w-lg mx-auto">
-            Upload your pitch deck and README. Five specialized AI judges independently evaluate your project and deliver a panel verdict.
-          </p>
+          {/* Workbench Panel */}
+          <div className="bp-panel p-6 sm:p-8 rounded-2xl border border-theme-border space-y-6 relative">
+            <div className="corner-marks" />
+            <div className="top-highlight" />
 
-          {/* Card */}
-          <div className="rounded-2xl border border-slate-800/80 bg-surface-900/80 backdrop-blur-sm p-6 shadow-2xl">
-            {/* Error */}
+            {/* Error Banner */}
             {error && (
-              <div className="mb-5">
-                <ErrorBanner message={error} onDismiss={() => setError(null)} />
-              </div>
+              <ErrorBanner
+                message={error}
+                onDismiss={() => setError(null)}
+              />
             )}
 
-            {/* Upload zones */}
-            <div className="space-y-4 mb-6">
-              <UploadZone
-                label="Pitch Deck"
-                accept=".pdf,.pptx"
-                hint="PDF or PPTX — up to 20MB"
-                file={pitchDeck}
-                onFile={setPitchDeck}
-                icon={<PresentationIcon />}
-              />
-              <div className="flex items-center gap-3">
-                <div className="flex-1 h-px bg-slate-800" />
-                <span className="text-xs text-slate-600 font-medium">or</span>
-                <div className="flex-1 h-px bg-slate-800" />
+            {/* Ingestion Channels */}
+            <div>
+              <div className="flex items-center justify-between pb-2 border-b border-theme-border mb-4">
+                <span className="section-label">INGESTION CHANNELS // PRIMARY SOURCES</span>
+                <span className="font-mono text-micro text-theme-text-muted">MIN 1 REQUIRED</span>
               </div>
-              <UploadZone
-                label="README.md"
-                accept=".md"
-                hint="Markdown file from your GitHub repo"
-                file={readme}
-                onFile={setReadme}
-                icon={<MarkdownIcon />}
-              />
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                <UploadZone
+                  label="PITCH DECK"
+                  accept=".pdf"
+                  file={pitchDeck}
+                  onFileSelect={setPitchDeck}
+                  onFile={setPitchDeck}
+                  hint="Slide deck, executive memo, or one-pager"
+                  badgeText="PDF · MAX 20MB"
+                  icon={<PresentationIcon />}
+                  id="pitch-deck"
+                />
+                <UploadZone
+                  label="TECHNICAL README"
+                  accept=".md,.txt"
+                  file={readme}
+                  onFileSelect={setReadme}
+                  onFile={setReadme}
+                  hint="Architecture doc, system design, or spec"
+                  badgeText="MD / TXT · MAX 5MB"
+                  icon={<MarkdownIcon />}
+                  id="readme"
+                />
+              </div>
             </div>
 
-            {/* Attack Mode Toggle */}
-            <div className="mb-4">
-              <Toggle
-                enabled={attackMode}
-                onToggle={() => setAttackMode(a => !a)}
-                label="Judge Attack Mode"
-                sublabel="Generate adversarial, high-pressure questions from the panel"
-              />
-            </div>
-
-            {/* Mythos Research Section */}
-            <div className="mb-4">
+            {/* Deep Market Reconnaissance (Mythos) */}
+            <div>
+              <div className="flex items-center justify-between pb-2 border-b border-theme-border mb-3">
+                <span className="section-label">EXTERNAL GROUNDING ENGINE</span>
+                <span className="font-mono text-micro text-theme-text-muted">OPTIONAL RECON</span>
+              </div>
               <MythosSection
                 pitchDeck={pitchDeck}
                 readme={readme}
-                onResearchReady={(rid) => setResearchRequestId(rid)}
+                onResearchReady={(id) => setResearchRequestId(id)}
               />
             </div>
 
-            {/* Evaluate Button */}
-            <button
-              onClick={handleEvaluate}
-              disabled={!canEvaluate}
-              className={`
-                w-full flex items-center justify-center gap-2.5 py-3.5 rounded-xl font-semibold text-sm transition-all duration-200
-                ${canEvaluate
-                  ? 'bg-gradient-to-r from-brand-600 to-brand-500 hover:from-brand-500 hover:to-brand-400 text-white shadow-lg shadow-brand-500/25 hover:shadow-brand-500/40 hover:-translate-y-0.5'
-                  : 'bg-surface-700 text-slate-600 cursor-not-allowed'
-                }
-              `}
-            >
-              <BoltIcon />
-              {researchRequestId ? 'Evaluate with Research' : 'Evaluate Project'}
-            </button>
+            {/* Execution Parameter Configuration */}
+            <div>
+              <div className="flex items-center justify-between pb-2 border-b border-theme-border mb-3">
+                <span className="section-label">DELIBERATION PROTOCOL</span>
+                <span className="font-mono text-micro text-theme-text-muted">PARAM CFG</span>
+              </div>
+              <Toggle
+                enabled={attackMode}
+                onToggle={() => setAttackMode(!attackMode)}
+                label="Adversarial Attack Mode"
+                sublabel="Judges assume hostile competitor posture, actively penalize ambiguity, and simulate deep-diligence cross-examination."
+              />
+            </div>
 
-            {!canEvaluate && (
-              <p className="text-center text-xs text-slate-600 mt-3">
-                Upload at least one file to begin
-              </p>
-            )}
+            {/* Execution Trigger */}
+            <div className="pt-2">
+              <button
+                onClick={handleEvaluate}
+                disabled={!canEvaluate || loading}
+                type="button"
+                id="evaluate-btn"
+                className={`w-full py-4 rounded-xl font-mono font-bold text-xs uppercase tracking-widest transition-all duration-200 flex items-center justify-center gap-2.5 relative overflow-hidden group select-none ${
+                  canEvaluate && !loading
+                    ? attackMode
+                      ? 'bg-theme-error text-white hover:opacity-90 shadow-md hover:shadow-lg active:scale-[0.99] cursor-pointer'
+                      : 'bg-theme-evidence text-white dark:text-ink-950 hover:opacity-90 shadow-md hover:shadow-lg active:scale-[0.99] cursor-pointer'
+                    : 'bg-theme-chip text-theme-text-muted cursor-not-allowed border border-theme-border opacity-50'
+                }`}
+              >
+                <BoltIcon />
+                <span>
+                  {canEvaluate
+                    ? attackMode
+                      ? 'Launch Adversarial Stress-Test Protocol →'
+                      : 'Initiate Multi-Agent Arbitration →'
+                    : 'Attach Pitch Deck or README to Begin'}
+                </span>
+              </button>
+            </div>
           </div>
 
-          {/* Feature pills */}
-          <div className="flex flex-wrap justify-center gap-2 mt-6">
-            {['5 AI Judges', 'Parallel Evaluation', 'Radar Analysis', 'Mythos Research', 'No Sign-up'].map(f => (
-              <span key={f} className="px-3 py-1 rounded-full text-xs text-slate-500 border border-slate-800 bg-surface-900">
-                {f}
+          {/* System Spec Badges */}
+          <div className="mt-8 flex flex-wrap justify-center gap-2 text-micro font-mono text-theme-text-secondary">
+            {[
+              '4 SPECIALIST AGENTS',
+              'CHIEF JUSTICE SYNTHESIS',
+              'BAYESIAN CONSENSUS SYNTHESIS',
+              'EMPIRICAL EVIDENCE AUDIT',
+              'DIFFERENTIATION MOAT MAPPING',
+            ].map((badge) => (
+              <span
+                key={badge}
+                className="px-2.5 py-1 rounded bg-theme-panel border border-theme-border shadow-xs"
+              >
+                {badge}
               </span>
             ))}
           </div>
         </div>
-      </div>
+      </main>
 
       {/* Footer */}
-      <div className="border-t border-slate-800/60 py-4 text-center">
-        <p className="text-xs text-slate-700">
-          IdeaValidator AI · Files are deleted immediately after evaluation
+      <footer className="border-t border-theme-border py-4 px-4 text-center bg-theme-panel">
+        <p className="font-mono text-micro text-theme-text-muted">
+          IDEAVALIDATOR AI // EPHEMERAL PIPELINE · ALL ARTIFACTS PARSED IN-MEMORY
         </p>
-      </div>
+      </footer>
     </div>
+  )
+}
+
+// Router Root
+export default function App() {
+  return (
+    <Routes>
+      <Route path="/" element={<Studio />} />
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/signup" element={<SignupPage />} />
+      <Route
+        path="/dashboard"
+        element={
+          <ProtectedRoute>
+            <DashboardPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/history"
+        element={
+          <ProtectedRoute>
+            <HistoryPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/history/:id"
+        element={
+          <ProtectedRoute>
+            <EvaluationDetailPage />
+          </ProtectedRoute>
+        }
+      />
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   )
 }

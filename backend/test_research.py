@@ -1,5 +1,5 @@
 """
-test_research.py — Unit and integration tests for the Agent37 Mythos research handoff.
+test_research.py â€” Unit and integration tests for the Agent37 Mythos research handoff.
 
 Tests cover:
 - Valid import and retrieval.
@@ -724,7 +724,7 @@ class TestResearchEndpoints(unittest.TestCase):
             data={"request_id": rid, "research_json": json.dumps(payload)},
             headers={"Authorization": f"Bearer {req['auth_token']}"},
         )
-        # Second import — same request_id and token
+        # Second import â€” same request_id and token
         response = self.client.post(
             "/research/import",
             data={"request_id": rid, "research_json": json.dumps(payload)},
@@ -759,17 +759,24 @@ class TestResearchEndpoints(unittest.TestCase):
 
     def test_evaluate_without_research_request_id_still_works(self):
         """Backward compat: /evaluate without research_request_id works normally."""
+        from unittest.mock import AsyncMock
         fake_md = b"# Test Idea\nAn innovative approach to cloud storage."
-        with patch("judges.run_all_judges") as mock_judges:
-            mock_judges.return_value = {
-                "innovation": {"score": 7}, "technical": {"score": 7},
-                "business": {"score": 7}, "presentation": {"score": 7},
-                "chief_judge": {"overall_score": 7.0}, "consensus": {"mean": 7.0},
-            }
-            # We can't easily make this async in TestClient without full app lifecycle
-            # so just verify the endpoint exists and processes form fields
-            # by using a minimal mock
-            pass
+        mock_result = {
+            "innovation": {"score": 7}, "technical": {"score": 7},
+            "business": {"score": 7}, "presentation": {"score": 7},
+            "chief_judge": {"overall_score": 7.0}, "consensus": {"mean": 7.0},
+        }
+        with patch("main.run_all_judges", new_callable=AsyncMock, return_value=mock_result):
+            response = self.client.post(
+                "/evaluate",
+                data={"attack_mode": "false"},
+                files={"readme": ("README.md", fake_md, "text/markdown")},
+            )
+        self.assertEqual(response.status_code, 200)
+        data = response.json()
+        self.assertIn("innovation", data)
+        self.assertIn("chief_judge", data)
+        self.assertNotIn("research_assisted", data)
 
     def test_research_request_requires_file(self):
         response = self.client.post("/research/request")
@@ -818,7 +825,7 @@ class TestMythosPromptBuilder(unittest.TestCase):
         prompt = r.build_mythos_research_prompt(rid, "Fintech idea")
         # Verify no token-looking strings appear (tokens are 43-char urlsafe base64)
         import re
-        # A real auth token would be exactly secrets.token_urlsafe(32) — 43 chars
+        # A real auth token would be exactly secrets.token_urlsafe(32) â€” 43 chars
         # We just verify it doesn't appear as a separate field
         self.assertNotIn("auth_token", prompt)
         self.assertNotIn("token", prompt.lower().split("schema")[0])
@@ -828,6 +835,442 @@ class TestMythosPromptBuilder(unittest.TestCase):
         long_summary = "x" * 3000
         prompt = r.build_mythos_research_prompt(rid, long_summary)
         self.assertNotIn("x" * 1600, prompt)
+
+
+# ---------------------------------------------------------------------------
+# 11. Agent37 client unit tests (all async methods mocked)
+# ---------------------------------------------------------------------------
+
+class TestAgent37Client(unittest.IsolatedAsyncioTestCase):
+
+    def setUp(self):
+        _clear_store()
+
+    def test_extract_json_direct(self):
+        payload = {"schema_version": "1.0", "data": "ok"}
+        extracted = r.extract_json_from_agent_output(json.dumps(payload))
+        self.assertEqual(extracted["schema_version"], "1.0")
+
+    def test_extract_json_markdown_fenced(self):
+        raw = "Here is the result:\n```json\n{\"schema_version\": \"1.0\", \"key\": \"val\"}\n```\nHope it helps!"
+        extracted = r.extract_json_from_agent_output(raw)
+        self.assertEqual(extracted["key"], "val")
+
+    def test_extract_json_outermost_braces(self):
+        raw = "Some text before {\"schema_version\": \"1.0\", \"nested\": {\"a\": 1}} some text after"
+        extracted = r.extract_json_from_agent_output(raw)
+        self.assertEqual(extracted["nested"]["a"], 1)
+
+    def test_extract_json_invalid_raises_output_error(self):
+        with self.assertRaises(r.Agent37OutputError):
+            r.extract_json_from_agent_output("No json here at all.")
+
+    async def test_resolve_instance_success(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_error = False
+        mock_resp.json.return_value = {
+            "data": [
+                {"id": "inst_other", "name": "other-agent", "status": "running", "created": 100},
+                {"id": "inst_mythos", "name": "Mythos", "status": "running", "created": 200},
+            ]
+        }
+        from unittest.mock import AsyncMock
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        chosen_id = await r.resolve_agent37_instance(
+            api_key="test_key",
+            client=mock_client,
+        )
+        self.assertEqual(chosen_id, "inst_mythos")
+
+    async def test_resolve_instance_deterministic_sorting(self):
+        """Prefers running instance over stopped, and newer over older."""
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_error = False
+        mock_resp.json.return_value = {
+            "data": [
+                {"id": "mythos_old_stopped", "name": "mythos", "status": "stopped", "created": 100},
+                {"id": "mythos_new_running", "name": "MYTHOS", "status": "running", "created": 200},
+                {"id": "mythos_old_running", "name": "Mythos", "status": "running", "created": 150},
+            ]
+        }
+        from unittest.mock import AsyncMock
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        chosen_id = await r.resolve_agent37_instance(
+            api_key="test_key",
+            client=mock_client,
+        )
+        self.assertEqual(chosen_id, "mythos_new_running")
+
+    async def test_resolve_instance_not_found_raises(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_error = False
+        mock_resp.json.return_value = {"data": [{"id": "abc", "name": "Heracles"}]}
+        from unittest.mock import AsyncMock
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37InstanceNotFoundError):
+            await r.resolve_agent37_instance(api_key="test_key", client=mock_client)
+
+    async def test_resolve_instance_401_raises_auth_error(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.is_error = True
+        from unittest.mock import AsyncMock
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37AuthError):
+            await r.resolve_agent37_instance(api_key="invalid_key", client=mock_client)
+
+    async def test_resolve_instance_402_403_raises_budget_error(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 402
+        mock_resp.is_error = True
+        from unittest.mock import AsyncMock
+        mock_client.get = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37BudgetError):
+            await r.resolve_agent37_instance(api_key="test_key", client=mock_client)
+
+    async def test_resolve_instance_timeout_raises_timeout_error(self):
+        mock_client = MagicMock()
+        from unittest.mock import AsyncMock
+        import httpx
+        mock_client.get = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+
+        with self.assertRaises(r.Agent37TimeoutError):
+            await r.resolve_agent37_instance(api_key="test_key", client=mock_client)
+
+    async def test_call_agent37_response_success(self):
+        valid_json = json.dumps({
+            "schema_version": "1.0",
+            "request_id": "test-req",
+            "market_summary": "Solid evidence of market expansion across cloud platforms.",
+            "competitors": [{
+                "name": "CloudCo",
+                "description": "Provider of cloud storage.",
+                "differentiation": "Targeting SMBs.",
+                "source_urls": ["https://cloudco.example.com"],
+                "evidence": ["Founded in 2020."],
+            }],
+            "research_limitations": [],
+        })
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_error = False
+        mock_resp.json.return_value = {"output_text": valid_json}
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        res = await r.call_agent37_response(
+            instance_id="inst_123",
+            api_key="sk_key",
+            prompt="Research task",
+            client=mock_client,
+        )
+        self.assertEqual(res["schema_version"], "1.0")
+        self.assertEqual(res["competitors"][0]["name"], "CloudCo")
+
+    async def test_call_agent37_response_401_raises_auth_error(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.is_error = True
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37AuthError) as ctx:
+            await r.call_agent37_response("inst_1", "bad_key", "prompt", client=mock_client)
+        self.assertIn("Agent37 authentication failed", str(ctx.exception))
+
+    async def test_call_agent37_response_401_reports_upstream_message(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.is_error = True
+        mock_resp.json.return_value = {"error": "Token expired"}
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37AuthError) as ctx:
+            await r.call_agent37_response("inst_1", "bad_key", "prompt", client=mock_client)
+        self.assertIn("Token expired", str(ctx.exception))
+
+    async def test_call_agent37_response_401_reports_upstream_detail(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 401
+        mock_resp.is_error = True
+        mock_resp.json.return_value = {"detail": "Instance unauthorized"}
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37AuthError) as ctx:
+            await r.call_agent37_response("inst_1", "bad_key", "prompt", client=mock_client)
+        self.assertIn("Instance unauthorized", str(ctx.exception))
+
+    async def test_call_agent37_response_409_raises_conflict_error(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 409
+        mock_resp.is_error = True
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with self.assertRaises(r.Agent37ConflictError):
+            await r.call_agent37_response("inst_1", "key", "prompt", client=mock_client)
+
+    async def test_call_agent37_response_timeout_raises(self):
+        mock_client = MagicMock()
+        from unittest.mock import AsyncMock
+        import httpx
+        mock_client.post = AsyncMock(side_effect=httpx.TimeoutException("timeout"))
+
+        with self.assertRaises(r.Agent37TimeoutError):
+            await r.call_agent37_response("inst_1", "key", "prompt", client=mock_client)
+
+    async def test_run_agent37_research_missing_api_key_raises(self):
+        with patch.dict(os.environ, {"AGENT37_API_KEY": ""}, clear=False):
+            with self.assertRaises(r.Agent37ConfigError):
+                await r.run_agent37_research("req_1", "tok_1", "context")
+
+    async def test_run_agent37_research_invalid_schema_raises_output_error(self):
+        req = r.create_research_request("Fintech context")
+        invalid_output = json.dumps({"wrong": "schema"})
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_error = False
+        mock_resp.json.return_value = {"output_text": invalid_output}
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        with patch.dict(os.environ, {"AGENT37_API_KEY": "sk_test", "AGENT37_INSTANCE_ID": "inst_1"}):
+            with self.assertRaises(r.Agent37OutputError):
+                await r.run_agent37_research(
+                    req["request_id"], req["auth_token"], "Fintech context", client=mock_client
+                )
+
+    def test_extract_instance_id_formats(self):
+        self.assertEqual(r.extract_instance_id("jh487mzr9e"), "jh487mzr9e")
+        self.assertEqual(r.extract_instance_id("https://jh487mzr9e.agent37.app"), "jh487mzr9e")
+        self.assertEqual(r.extract_instance_id("https://jh487mzr9e.agent37.app/"), "jh487mzr9e")
+        self.assertEqual(r.extract_instance_id("https://jh487mzr9e.agent37.app/v1/responses"), "jh487mzr9e")
+        self.assertEqual(r.extract_instance_id("jh487mzr9e.agent37.app"), "jh487mzr9e")
+        self.assertIsNone(r.extract_instance_id(""))
+        self.assertIsNone(r.extract_instance_id(None))
+
+    def test_get_agent37_config_with_instance_url(self):
+        with patch.dict(os.environ, {"AGENT37_API_KEY": "test_k", "AGENT37_INSTANCE_URL": "https://jh487mzr9e.agent37.app"}, clear=True):
+            cfg = r.get_agent37_config()
+            self.assertEqual(cfg["instance_id"], "jh487mzr9e")
+            self.assertEqual(cfg["instance_url"], "https://jh487mzr9e.agent37.app")
+
+    def test_get_agent37_diagnostics_safety(self):
+        # Case 1: Data plane (instance specified)
+        with patch.dict(os.environ, {"AGENT37_API_KEY": "secret_12345", "AGENT37_INSTANCE_URL": "https://jh487mzr9e.agent37.app"}, clear=True):
+            diag = r.get_agent37_diagnostics()
+            self.assertEqual(diag["destination_host"], "jh487mzr9e.agent37.app")
+            self.assertEqual(diag["auth_header"], "X-Agent37-Key")
+            self.assertTrue(diag["key_present"])
+            # Ensure secret key and length are NEVER exposed
+            diag_str = str(diag)
+            self.assertNotIn("secret_12345", diag_str)
+            self.assertNotIn("12", diag_str)
+
+        # Case 2: Control plane (no instance specified)
+        with patch.dict(os.environ, {"AGENT37_API_KEY": "secret_abc", "AGENT37_BASE_URL": "https://api.agent37.com"}, clear=True):
+            diag = r.get_agent37_diagnostics()
+            self.assertEqual(diag["destination_host"], "api.agent37.com")
+            self.assertEqual(diag["auth_header"], "Authorization")
+            self.assertTrue(diag["key_present"])
+            self.assertNotIn("secret_abc", str(diag))
+
+    def test_get_agent37_config_normalizes_ysk_live(self):
+        with patch.dict(os.environ, {"AGENT37_API_KEY": "ysk_live_sampletoken123"}, clear=True):
+            cfg = r.get_agent37_config()
+            self.assertEqual(cfg["api_key"], "sk_live_sampletoken123")
+
+    def test_get_agent37_config_strips_quotes(self):
+        with patch.dict(os.environ, {"AGENT37_API_KEY": '"sk_live_quoted"'}, clear=True):
+            cfg = r.get_agent37_config()
+            self.assertEqual(cfg["api_key"], "sk_live_quoted")
+
+    async def test_call_agent37_response_verifies_exact_header_and_payload(self):
+        mock_client = MagicMock()
+        mock_resp = MagicMock()
+        mock_resp.status_code = 200
+        mock_resp.is_error = False
+        mock_resp.json.return_value = {
+            "output_text": json.dumps({
+                "schema_version": "1.0",
+                "request_id": "test-req",
+                "market_summary": "Test market summary for validation",
+                "competitors": [{
+                    "name": "Comp1",
+                    "description": "Desc1",
+                    "differentiation": "Diff1",
+                    "source_urls": ["https://example.com"],
+                    "evidence": ["Evidence 1"],
+                }],
+                "research_limitations": [],
+            })
+        }
+        from unittest.mock import AsyncMock
+        mock_client.post = AsyncMock(return_value=mock_resp)
+
+        await r.call_agent37_response("jh487mzr9e", "sk_live_key123", "Test prompt", client=mock_client)
+
+        mock_client.post.assert_called_once()
+        called_url, called_kwargs = mock_client.post.call_args
+        self.assertEqual(called_url[0], "https://jh487mzr9e.agent37.app/v1/responses")
+        headers = called_kwargs["headers"]
+        self.assertEqual(headers["X-Agent37-Key"], "sk_live_key123")
+        self.assertNotIn("Bearer", headers.get("Authorization", ""))
+        payload = called_kwargs["json"]
+        self.assertEqual(payload["input"], "Test prompt")
+        self.assertFalse(payload["stream"])
+
+
+# ---------------------------------------------------------------------------
+# 12. Automated research endpoints & end-to-end integration
+# ---------------------------------------------------------------------------
+
+class TestAutomatedResearchEndpoints(unittest.TestCase):
+
+    def setUp(self):
+        _clear_store()
+        import main
+        main._request_records.clear()
+        from starlette.testclient import TestClient
+        self.client = TestClient(main.app)
+
+    def test_research_auto_requires_file(self):
+        response = self.client.post("/research/auto")
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("file", response.json()["detail"].lower())
+
+    def test_research_auto_success_returns_202_without_exposing_auth_token(self):
+        fake_md = b"# SafeCloud\nSecure distributed cloud storage solution."
+        response = self.client.post(
+            "/research/auto",
+            files={"readme": ("README.md", fake_md, "text/markdown")},
+        )
+        self.assertEqual(response.status_code, 202)
+        data = response.json()
+        self.assertEqual(data["status"], "processing")
+        self.assertIn("request_id", data)
+        self.assertIn("research_prompt", data)
+        # CRITICAL SECURITY REQUIREMENT: auth_token must NEVER be in the response
+        self.assertNotIn("auth_token", data)
+        self.assertNotIn("token", data)
+
+    def test_research_status_lifecycle(self):
+        """Test status transitions: processing -> completed and processing -> failed."""
+        req = r.create_research_request("Idea context")
+        rid = req["request_id"]
+        r.set_auto_status(rid, "processing")
+        r.set_research_prompt(rid, "Research prompt content")
+
+        # 1. Processing state
+        resp = self.client.get(f"/research/status/{rid}")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json()["status"], "processing")
+        self.assertNotIn("auth_token", resp.json())
+
+        # 2. Completed state
+        payload = make_valid_payload(rid)
+        r.import_research_by_token(rid, req["auth_token"], payload)
+        r.set_auto_status(rid, "completed")
+
+        resp = self.client.get(f"/research/status/{rid}")
+        self.assertEqual(resp.status_code, 200)
+        data = resp.json()
+        self.assertEqual(data["status"], "completed")
+        self.assertEqual(data["competitor_count"], 1)
+        self.assertNotIn("auth_token", data)
+
+        # 3. Failed state
+        req2 = r.create_research_request("Idea context 2")
+        rid2 = req2["request_id"]
+        r.set_auto_status(rid2, "failed", "Agent37 budget exhausted.")
+        resp2 = self.client.get(f"/research/status/{rid2}")
+        self.assertEqual(resp2.status_code, 200)
+        self.assertEqual(resp2.json()["status"], "failed")
+        self.assertEqual(resp2.json()["error"], "Agent37 budget exhausted.")
+        self.assertNotIn("auth_token", resp2.json())
+
+    def test_research_status_404_for_unknown_id(self):
+        resp = self.client.get("/research/status/nonexistent-uuid")
+        self.assertEqual(resp.status_code, 404)
+
+    def test_e2e_automated_research_to_evaluate_pipeline(self):
+        """End-to-end integration: automated research is imported and injected into judges during /evaluate."""
+        import secrets
+        from unittest.mock import AsyncMock
+        fake_md = b"# CyberShield\nAutonomous zero-trust network monitoring system."
+
+        # 1. Start automated research
+        with patch("research.run_agent37_research", new_callable=AsyncMock) as mock_agent_run:
+            mock_agent_run.return_value = make_valid_payload("req_id")
+            resp = self.client.post(
+                "/research/auto",
+                files={"readme": ("README.md", fake_md, "text/markdown")},
+            )
+            self.assertEqual(resp.status_code, 202)
+            rid = resp.json()["request_id"]
+
+        # 2. Simulate background task completion
+        entry = r._pending_requests[rid]
+        # In a real run, import_research_by_token was called. Let's call it:
+        payload = make_valid_payload(rid)
+        # Reconstruct token from entry hash or call import
+        raw_token = secrets.token_urlsafe(32)
+        with r._store_lock:
+            entry["token_hash"] = r._hash_token(raw_token)
+        r.import_research_by_token(rid, raw_token, payload)
+        r.set_auto_status(rid, "completed")
+
+        # 3. Verify status endpoint reports completed
+        status_resp = self.client.get(f"/research/status/{rid}")
+        self.assertEqual(status_resp.status_code, 200)
+        self.assertEqual(status_resp.json()["status"], "completed")
+
+        # 4. Run /evaluate passing research_request_id
+        mock_judge_results = {
+            "innovation": {"score": 8, "verdict": "Novel"},
+            "technical": {"score": 8, "verdict": "Feasible"},
+            "business": {"score": 8, "verdict": "Viable"},
+            "presentation": {"score": 8, "verdict": "Clear"},
+            "chief_judge": {"overall_score": 8.0},
+            "consensus": {"mean": 8.0},
+        }
+
+        with patch("main.run_all_judges", new_callable=AsyncMock, return_value=mock_judge_results) as mock_judges:
+            eval_resp = self.client.post(
+                "/evaluate",
+                data={"attack_mode": "false", "research_request_id": rid},
+                files={"readme": ("README.md", fake_md, "text/markdown")},
+            )
+            self.assertEqual(eval_resp.status_code, 200)
+
+            # Verify that external_research containing the research block was passed to run_all_judges!
+            mock_judges.assert_called_once()
+            _, kwargs = mock_judges.call_args
+            self.assertIn("external_research", kwargs)
+            self.assertIsNotNone(kwargs["external_research"])
+            self.assertIn("<external_market_research>", kwargs["external_research"])
+            self.assertIn("Acme Corp", kwargs["external_research"])
 
 
 if __name__ == "__main__":

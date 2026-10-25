@@ -224,11 +224,26 @@ PRIORITIZED ROADMAP RULES:
 
 {attack_instructions}
 
-Respond ONLY with valid JSON, no markdown, no code blocks:
+CRITICAL OUTPUT FORMAT REQUIREMENTS:
+- You must output ONLY a single valid JSON object.
+- Do NOT wrap your output in markdown code fences (no ```json or ```).
+- Do NOT include any leading or trailing commentary, explanations, or notes outside the JSON object.
+- You MUST include all mandatory fields with their exact specified types:
+  * overall_score: number between 0.0 and 10.0 (float or int, e.g. 7.4)
+  * confidence: integer between 0 and 100
+  * evidence_quality: integer between 0 and 100
+  * final_verdict: string (3-4 sentences of honest overall assessment, naming the project if known)
+  * top_strengths: array of exactly 3 strings
+  * top_improvements: array of exactly 3 strings
+  * improvement_roadmap: array of 3 to 5 strings
+  * judge_questions: array of exactly 6 strings
+  * prioritized_roadmap: array of roadmap item objects (each with priority, title, reason, impact, effort)
+  * differentiation: object with solution_category, claimed_differentiators, differentiation_strengths, differentiation_gaps, unsupported_claims, limitation_note
+
 {{
-  "overall_score": <number with one decimal place, e.g. 7.4>,
-  "confidence": <integer 0-100, synthesized from all judges>,
-  "evidence_quality": <integer 0-100, synthesized from all judges>,
+  "overall_score": 7.4,
+  "confidence": 85,
+  "evidence_quality": 80,
   "final_verdict": "<3-4 sentences of honest overall assessment, name the project if known>",
   "top_strengths": ["<strength 1>", "<strength 2>", "<strength 3>"],
   "top_improvements": ["<improvement 1>", "<improvement 2>", "<improvement 3>"],
@@ -236,11 +251,11 @@ Respond ONLY with valid JSON, no markdown, no code blocks:
   "judge_questions": ["<question 1>", "<question 2>", "<question 3>", "<question 4>", "<question 5>", "<question 6>"],
   "prioritized_roadmap": [
     {{
-      "priority": "<P0|P1|P2>",
+      "priority": "P0",
       "title": "<concise action title>",
       "reason": "<why this matters, tied to judge findings>",
-      "impact": "<High|Medium|Low>",
-      "effort": "<High|Medium|Low>"
+      "impact": "High",
+      "effort": "Medium"
     }}
   ],
   "differentiation": {{
