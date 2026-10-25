@@ -439,6 +439,22 @@ pytest test_eval_pipeline.py -v
 pytest test_security.py -v
 ```
 
+### 4. Deploying to Render
+
+The repository includes a `render.yaml` Blueprint for the API and static frontend.
+Connect the GitHub repository in Render and create a Blueprint from the repository
+root. During setup, provide `GEMINI_API_KEY`, the API's `ALLOWED_ORIGINS`, and
+the frontend's `VITE_API_URL` through Render's environment-variable prompts; do
+not put secrets in the Blueprint or source control.
+
+For persistent account and evaluation data, the API uses a 1 GB Render disk
+mounted at `/var/data`. Persistent disks require a paid Render web-service plan.
+Configure a custom frontend domain (for example, `app.example.com`) and API
+domain (for example, `api.example.com`) on their respective Render services.
+Set `ALLOWED_ORIGINS` to the exact frontend origin (including `https://`) and
+`VITE_API_URL` to the API's full HTTPS URL. These sibling domains keep the
+existing secure refresh-cookie policy compatible with browser authentication.
+
 ---
 
 ## 17. Example Evaluation
