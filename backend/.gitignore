@@ -7,3 +7,5 @@ __pycache__/
 *hackathon_judge_uploads*
 *.tmp
 *.log
+data/
+*.db

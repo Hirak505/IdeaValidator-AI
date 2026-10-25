@@ -3,68 +3,286 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    /* Light Mode: Blueprint Paper */
+    --bg-main: #F4F5F2;
+    --bg-secondary: #EAEEF1;
+    --bg-panel: #FFFFFF;
+    --bg-panel-subtle: #F6F8F9;
+    --bg-chip: #EAEEF1;
+    --text-primary: #17212B;
+    --text-secondary: #586777;
+    --text-muted: #8292A2;
+    --border-color: #D5DDE4;
+    --border-subtle: #E2E8EE;
+    --border-active: #087E8B;
+    --grid-line: rgba(220, 229, 236, 0.7);
+    --tech-annotation: #B77900;
+    --evidence-conn: #087E8B;
+    --status-positive: #16835D;
+    --status-warning: #A86A00;
+    --status-error: #C43D43;
+    --panel-shadow: 0 1px 3px rgba(23, 33, 43, 0.05), 0 4px 16px rgba(23, 33, 43, 0.03);
+    --selection-bg: rgba(8, 126, 139, 0.18);
+    --scrollbar-track: #EAEEF1;
+    --scrollbar-thumb: #CBD5E1;
+    --scrollbar-thumb-hover: #087E8B;
+    --corner-mark-color: rgba(8, 126, 139, 0.35);
+    --top-highlight: linear-gradient(90deg, transparent 0%, rgba(8, 126, 139, 0.12) 30%, rgba(8, 126, 139, 0.22) 50%, rgba(8, 126, 139, 0.12) 70%, transparent 100%);
+  }
+
+  html.dark {
+    /* Dark Mode: Blueprint Night */
+    --bg-main: #10283F;
+    --bg-secondary: #16334D;
+    --bg-panel: #1B3B55;
+    --bg-panel-subtle: #142E46;
+    --bg-chip: #16334D;
+    --text-primary: #F2F6FA;
+    --text-secondary: #B5C7D6;
+    --text-muted: #6B87A0;
+    --border-color: #29465F;
+    --border-subtle: #1F3A52;
+    --border-active: #68C9D0;
+    --grid-line: rgba(41, 70, 95, 0.6);
+    --tech-annotation: #FFC857;
+    --evidence-conn: #68C9D0;
+    --status-positive: #54C99A;
+    --status-warning: #F2B84B;
+    --status-error: #F07878;
+    --panel-shadow: 0 2px 8px rgba(0, 0, 0, 0.35), 0 8px 24px rgba(0, 0, 0, 0.25);
+    --selection-bg: rgba(104, 201, 208, 0.25);
+    --scrollbar-track: #10283F;
+    --scrollbar-thumb: #29465F;
+    --scrollbar-thumb-hover: #68C9D0;
+    --corner-mark-color: rgba(104, 201, 208, 0.4);
+    --top-highlight: linear-gradient(90deg, transparent 0%, rgba(104, 201, 208, 0.12) 30%, rgba(104, 201, 208, 0.22) 50%, rgba(104, 201, 208, 0.12) 70%, transparent 100%);
+  }
+
   body {
-    background-color: #080b14;
-    color: #e2e8f0;
-    font-family: 'Inter', system-ui, sans-serif;
+    background-color: var(--bg-main);
+    color: var(--text-primary);
+    font-family: 'Inter', system-ui, -apple-system, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
+    transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1), color 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
   * {
     box-sizing: border-box;
   }
 
+  ::selection {
+    background: var(--selection-bg);
+    color: var(--text-primary);
+  }
+
   ::-webkit-scrollbar {
     width: 6px;
+    height: 6px;
   }
   ::-webkit-scrollbar-track {
-    background: #0d1117;
+    background: var(--scrollbar-track);
   }
   ::-webkit-scrollbar-thumb {
-    background: #243050;
+    background: var(--scrollbar-thumb);
     border-radius: 3px;
   }
   ::-webkit-scrollbar-thumb:hover {
-    background: #4e53e8;
+    background: var(--scrollbar-thumb-hover);
   }
 }
 
 @layer components {
-  .glass-card {
-    background: rgba(13, 17, 23, 0.8);
-    border: 1px solid rgba(99, 114, 245, 0.15);
-    backdrop-filter: blur(12px);
+  /* ─── Blueprint Panel ─── */
+  .bp-panel {
+    background: var(--bg-panel);
+    border: 1px solid var(--border-color);
+    border-radius: 1rem;
+    box-shadow: var(--panel-shadow);
+    position: relative;
+    overflow: hidden;
+    transition: background-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                border-color 0.2s cubic-bezier(0.16, 1, 0.3, 1),
+                box-shadow 0.2s cubic-bezier(0.16, 1, 0.3, 1);
   }
 
+  .bp-panel::before {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 1px;
+    background: var(--top-highlight);
+    pointer-events: none;
+  }
+
+  /* ─── Swiss Section Label ─── */
+  .section-label {
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    font-size: 0.6875rem;
+    font-weight: 600;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--text-secondary);
+  }
+
+  .section-label::before {
+    content: '';
+    width: 12px;
+    height: 1px;
+    background: var(--border-active);
+    flex-shrink: 0;
+  }
+
+  /* ─── Engineering Divider ─── */
+  .divider {
+    height: 1px;
+    background: var(--border-color);
+    border: none;
+    margin: 1.5rem 0;
+  }
+
+  /* ─── Blueprint Grid Background ─── */
+  .bp-grid {
+    background-image:
+      linear-gradient(var(--grid-line) 1px, transparent 1px),
+      linear-gradient(90deg, var(--grid-line) 1px, transparent 1px);
+    background-size: 36px 36px;
+  }
+
+  /* ─── Shimmer Effect ─── */
   .shimmer {
     background: linear-gradient(
       90deg,
       rgba(255,255,255,0.0) 0%,
-      rgba(255,255,255,0.05) 50%,
+      rgba(255,255,255,0.06) 50%,
       rgba(255,255,255,0.0) 100%
     );
     background-size: 200% 100%;
-    animation: shimmer 1.8s infinite;
+    animation: shimmer 2s infinite;
   }
 
+  /* ─── Score Bar Fill ─── */
   .score-bar-fill {
-    transition: width 1s cubic-bezier(0.4, 0, 0.2, 1);
+    transition: width 1s cubic-bezier(0.16, 1, 0.3, 1);
+  }
+
+  /* ─── Metric Chip ─── */
+  .metric-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.375rem;
+    padding: 0.25rem 0.625rem;
+    border-radius: 0.375rem;
+    font-size: 0.625rem;
+    font-weight: 600;
+    letter-spacing: 0.05em;
+    text-transform: uppercase;
+    border: 1px solid var(--border-color);
+    background: var(--bg-chip);
+    color: var(--text-primary);
+  }
+
+  /* ─── Evidence Badge ─── */
+  .evidence-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 0.125rem 0.5rem;
+    border-radius: 0.25rem;
+    font-size: 0.5625rem;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+  }
+
+  /* ─── Blueprint Marker Dot ─── */
+  .bp-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+
+  .bp-dot::after {
+    content: '';
+    display: block;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    animation: blueprintPulse 4s ease-in-out infinite;
+  }
+
+  /* ─── Technical Corner Marks ─── */
+  .corner-marks {
+    position: relative;
+  }
+
+  .corner-marks::before,
+  .corner-marks::after {
+    content: '';
+    position: absolute;
+    width: 8px;
+    height: 8px;
+    border-color: var(--corner-mark-color);
+    border-style: solid;
+    pointer-events: none;
+  }
+
+  .corner-marks::before {
+    top: -1px;
+    left: -1px;
+    border-width: 1px 0 0 1px;
+  }
+
+  .corner-marks::after {
+    bottom: -1px;
+    right: -1px;
+    border-width: 0 1px 1px 0;
   }
 }
 
 @layer utilities {
   .text-gradient {
-    background: linear-gradient(135deg, #6272f5, #22d3ee);
+    background: linear-gradient(135deg, #087E8B, #38d9f5);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  html.dark .text-gradient {
+    background: linear-gradient(135deg, #4a72e0, #68C9D0);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+  }
+
+  .text-gradient-warm {
+    background: linear-gradient(135deg, #f59e0b, #f43f5e);
     -webkit-background-clip: text;
     -webkit-text-fill-color: transparent;
     background-clip: text;
   }
 
   .border-gradient {
-    border-image: linear-gradient(135deg, #6272f5, #22d3ee) 1;
+    border-image: linear-gradient(135deg, #087E8B, #68C9D0) 1;
   }
 
-  .bg-grid {
-    background-image: radial-gradient(circle, rgba(99,114,245,0.08) 1px, transparent 1px);
-    background-size: 32px 32px;
-  }
+  /* ─── Stagger animation delays ─── */
+  .stagger-1 { animation-delay: 0.05s; }
+  .stagger-2 { animation-delay: 0.1s; }
+  .stagger-3 { animation-delay: 0.15s; }
+  .stagger-4 { animation-delay: 0.2s; }
+  .stagger-5 { animation-delay: 0.25s; }
+  .stagger-6 { animation-delay: 0.3s; }
+}
+
+/* ─── Keyframes ─── */
+@keyframes blueprintPulse {
+  0%, 100% { opacity: 0.4; }
+  50% { opacity: 1; }
 }

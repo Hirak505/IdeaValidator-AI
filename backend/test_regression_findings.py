@@ -2,6 +2,7 @@ import pytest
 import os
 import time
 import asyncio
+import threading
 from unittest.mock import patch, MagicMock
 from pathlib import Path
 from starlette.datastructures import Headers
@@ -296,15 +297,19 @@ async def test_thread_pool_and_semaphore_capacity_retained_on_timeout():
     sem = gemini_service.get_concurrency_semaphore()
     initial_value = sem._value
 
-    thread_finished = False
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+    worker_finished = threading.Event()
 
-    def blocking_model_call(prompt):
-        nonlocal thread_finished
-        time.sleep(0.3)
-        thread_finished = True
-        mock_resp = MagicMock()
-        mock_resp.text = '{"score": 7}'
-        return mock_resp
+    def blocking_model_call(prompt, request_options=None):
+        worker_started.set()
+        try:
+            release_worker.wait()
+            mock_resp = MagicMock()
+            mock_resp.text = '{"score": 7}'
+            return mock_resp
+        finally:
+            worker_finished.set()
 
     with patch.object(gemini_service, "TIMEOUT_SECONDS", 0.05):
         with patch.object(gemini_service, "get_model") as mock_get_model:
@@ -312,17 +317,28 @@ async def test_thread_pool_and_semaphore_capacity_retained_on_timeout():
             mock_model.generate_content.side_effect = blocking_model_call
             mock_get_model.return_value = mock_model
 
-            with pytest.raises(TimeoutError):
-                await gemini_service.call_judge("prompt", "Judge")
+            judge_task = asyncio.create_task(gemini_service.call_judge("prompt", "Judge"))
+            try:
+                assert await asyncio.to_thread(worker_started.wait, 2), "Model worker did not start"
 
-            # Immediately after TimeoutError, the synchronous thread is still running
-            if not thread_finished:
-                # Capacity should still be held (value lower than initial)
-                assert sem._value < initial_value
+                with pytest.raises(TimeoutError):
+                    await judge_task
 
-            # Await thread completion to ensure capacity is cleanly freed
-            await asyncio.sleep(0.35)
-            assert thread_finished is True
+                assert not worker_finished.is_set()
+                assert sem._value == initial_value - 1
+
+                # Drain the remaining permits so the next acquire can only complete
+                # after the timed-out worker's completion callback releases capacity.
+                for _ in range(initial_value - 1):
+                    await sem.acquire()
+            finally:
+                release_worker.set()
+                assert await asyncio.to_thread(worker_finished.wait, 2), "Model worker did not finish"
+
+            # The semaphore is drained; this waits for the worker's release callback.
+            await asyncio.wait_for(sem.acquire(), timeout=2)
+            for _ in range(initial_value):
+                sem.release()
             assert sem._value == initial_value
 
 
@@ -351,4 +367,3 @@ def test_utils_symlink_defense():
             symlink_path.unlink(missing_ok=True)
     finally:
         external_file.unlink(missing_ok=True)
-

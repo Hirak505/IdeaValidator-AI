@@ -1,4 +1,5 @@
 import asyncio
+import os
 from prompts import (
     INNOVATION_JUDGE_PROMPT,
     TECHNICAL_JUDGE_PROMPT,
@@ -8,9 +9,23 @@ from prompts import (
     ATTACK_MODE_INSTRUCTIONS,
     NORMAL_MODE_INSTRUCTIONS,
 )
-from gemini_service import call_judge
+from gemini_service import (
+    call_judge,
+    GeminiQuotaExceededError,
+    get_configured_model_name,
+    is_daily_quota_exhausted,
+    get_daily_quota_info,
+    get_daily_quota_guidance,
+)
 import json
+import logging
 import re
+import time
+from typing import Optional, Callable, Any
+
+logger = logging.getLogger("uvicorn.error")
+
+DEFAULT_JUDGE_CONCURRENCY = int(os.getenv("JUDGE_CONCURRENCY", "1"))
 
 
 VALID_EVIDENCE_TYPES = {"documented_fact", "supported_inference", "not_documented", "requires_verification", "unsupported_claim", "not_verified"}
@@ -353,27 +368,57 @@ def calculate_consensus(innovation: dict, technical: dict, business: dict, prese
     }
 
 
-async def run_innovation_judge(project_context: str) -> dict:
-    prompt = INNOVATION_JUDGE_PROMPT.format(project_context=project_context)
-    result = await call_judge(prompt, "Innovation Judge")
+async def _safe_call_judge(prompt: str, judge_name: str, abort_event: Optional[asyncio.Event] = None) -> dict:
+    """Invoke call_judge, tolerating test mocks that only accept (prompt, judge_name)."""
+    if abort_event is not None:
+        try:
+            return await call_judge(prompt, judge_name, abort_event=abort_event)
+        except TypeError:
+            pass
+    return await call_judge(prompt, judge_name)
+
+
+async def run_innovation_judge(
+    project_context: str,
+    external_research: Optional[str] = None,
+    abort_event: Optional[asyncio.Event] = None,
+) -> dict:
+    prompt = INNOVATION_JUDGE_PROMPT.format(
+        project_context=project_context,
+        external_research=external_research or "",
+    )
+    result = await _safe_call_judge(prompt, "Innovation Judge", abort_event=abort_event)
     return _validate_judge_result(result, "innovation", project_context=project_context)
 
 
-async def run_technical_judge(project_context: str) -> dict:
+async def run_technical_judge(
+    project_context: str,
+    abort_event: Optional[asyncio.Event] = None,
+) -> dict:
     prompt = TECHNICAL_JUDGE_PROMPT.format(project_context=project_context)
-    result = await call_judge(prompt, "Technical Judge")
+    result = await _safe_call_judge(prompt, "Technical Judge", abort_event=abort_event)
     return _validate_judge_result(result, "technical", project_context=project_context)
 
 
-async def run_business_judge(project_context: str) -> dict:
-    prompt = BUSINESS_JUDGE_PROMPT.format(project_context=project_context)
-    result = await call_judge(prompt, "Business Judge")
+async def run_business_judge(
+    project_context: str,
+    external_research: Optional[str] = None,
+    abort_event: Optional[asyncio.Event] = None,
+) -> dict:
+    prompt = BUSINESS_JUDGE_PROMPT.format(
+        project_context=project_context,
+        external_research=external_research or "",
+    )
+    result = await _safe_call_judge(prompt, "Business Judge", abort_event=abort_event)
     return _validate_judge_result(result, "business", project_context=project_context)
 
 
-async def run_presentation_judge(project_context: str) -> dict:
+async def run_presentation_judge(
+    project_context: str,
+    abort_event: Optional[asyncio.Event] = None,
+) -> dict:
     prompt = PRESENTATION_JUDGE_PROMPT.format(project_context=project_context)
-    result = await call_judge(prompt, "Presentation Judge")
+    result = await _safe_call_judge(prompt, "Presentation Judge", abort_event=abort_event)
     return _validate_judge_result(result, "presentation", project_context=project_context)
 
 
@@ -385,6 +430,8 @@ async def run_chief_judge(
     presentation: dict,
     attack_mode: bool = False,
     consensus: dict = None,
+    external_research: Optional[str] = None,
+    abort_event: Optional[asyncio.Event] = None,
 ) -> dict:
     attack_instructions = ATTACK_MODE_INSTRUCTIONS if attack_mode else NORMAL_MODE_INSTRUCTIONS
     attack_mode_label = "ENABLED - Be adversarial and critical" if attack_mode else "DISABLED - Be constructive"
@@ -412,23 +459,121 @@ async def run_chief_judge(
         attack_mode=attack_mode_label,
         attack_instructions=attack_instructions,
         consensus_data=consensus_data,
+        external_research=external_research or "",
     )
-    result = await call_judge(prompt, "Chief Judge")
+    result = await _safe_call_judge(prompt, "Chief Judge", abort_event=abort_event)
     return _validate_chief_result(result)
 
 
-async def run_all_judges(project_context: str, attack_mode: bool = False) -> dict:
-    """Run all four specialist judges in parallel with safe sibling cancellation, then chief judge."""
+async def run_all_judges(
+    project_context: str,
+    attack_mode: bool = False,
+    external_research: Optional[str] = None,
+    stage_callback: Optional[Any] = None,
+    abort_event: Optional[asyncio.Event] = None,
+) -> dict:
+    """Run four specialist judges with controlled concurrency and safe sibling cancellation, then chief judge.
+
+    external_research: optional pre-formatted external market research block (from research.py).
+    When None, evaluation proceeds normally without any external research context.
+    stage_callback: optional callable receiving the current stage name ("Specialist Judges", "Chief Judge", "Completed").
+    abort_event: optional asyncio.Event for external cancellation or sibling failure abort signaling.
+    """
+    research_block = external_research or ""
+
+    if abort_event is None:
+        abort_event = asyncio.Event()
+
+    concurrency = int(os.getenv("JUDGE_CONCURRENCY", "1"))
+    concurrency = max(1, min(concurrency, 4))
+    judge_sem = asyncio.Semaphore(concurrency)
+    pacing_delay = float(os.getenv("JUDGE_RATE_LIMIT_DELAY", "0.0"))
+    configured_model = get_configured_model_name()
+
+    # Pre-dispatch check: Do not dispatch or schedule judges if daily quota is already exhausted
+    if is_daily_quota_exhausted(configured_model):
+        info = get_daily_quota_info(configured_model) or {}
+        rem = info.get("retry_after", 86400)
+        guidance = info.get("guidance") or get_daily_quota_guidance(configured_model, rem)
+        logger.warning(
+            "Evaluation pipeline aborted before dispatch — model '%s' daily quota is already exhausted.",
+            configured_model,
+        )
+        abort_event.set()
+        raise GeminiQuotaExceededError(
+            f"Evaluation prevented: daily API quota is exhausted for model '{configured_model}'. {guidance}",
+            retry_after=rem,
+            is_daily=True,
+            model=configured_model,
+            retry_guidance=guidance,
+        )
+
+    async def _notify_stage(stage_name: str) -> None:
+        if stage_callback:
+            try:
+                res = stage_callback(stage_name)
+                if asyncio.iscoroutine(res):
+                    await res
+            except Exception:
+                pass
+
+    async def _guarded_judge(judge_fn, judge_name: str, *args, **kwargs):
+        if abort_event.is_set():
+            logger.info("Judge '%s' skipped — evaluation has already failed or been cancelled.", judge_name)
+            raise asyncio.CancelledError(f"{judge_name} cancelled before acquiring concurrency slot")
+
+        if is_daily_quota_exhausted(configured_model):
+            logger.info("Judge '%s' skipped — daily quota for model '%s' is exhausted.", judge_name, configured_model)
+            abort_event.set()
+            raise asyncio.CancelledError(f"{judge_name} cancelled due to daily quota exhaustion")
+
+        async with judge_sem:
+            if abort_event.is_set():
+                logger.info("Judge '%s' skipped — evaluation has already failed or been cancelled.", judge_name)
+                raise asyncio.CancelledError(f"{judge_name} cancelled after acquiring concurrency slot")
+
+            if is_daily_quota_exhausted(configured_model):
+                logger.info("Judge '%s' skipped — daily quota for model '%s' is exhausted.", judge_name, configured_model)
+                abort_event.set()
+                raise asyncio.CancelledError(f"{judge_name} cancelled due to daily quota exhaustion")
+
+            if pacing_delay > 0:
+                await asyncio.sleep(pacing_delay)
+                if abort_event.is_set():
+                    logger.info("Judge '%s' skipped — evaluation has already failed or been cancelled.", judge_name)
+                    raise asyncio.CancelledError(f"{judge_name} cancelled during pacing delay")
+
+            try:
+                try:
+                    return await judge_fn(*args, **kwargs, abort_event=abort_event)
+                except TypeError:
+                    # In case judge_fn is a mock or custom callable without abort_event parameter
+                    return await judge_fn(*args, **kwargs)
+            except Exception as exc:
+                # Terminal or runtime failure in any specialist judge triggers immediate abort for all siblings
+                abort_event.set()
+                raise exc
+
     specialist_tasks = [
-        asyncio.create_task(run_innovation_judge(project_context)),
-        asyncio.create_task(run_technical_judge(project_context)),
-        asyncio.create_task(run_business_judge(project_context)),
-        asyncio.create_task(run_presentation_judge(project_context)),
+        asyncio.create_task(_guarded_judge(run_innovation_judge, "Innovation Judge", project_context, external_research=research_block)),
+        asyncio.create_task(_guarded_judge(run_technical_judge, "Technical Judge", project_context)),
+        asyncio.create_task(_guarded_judge(run_business_judge, "Business Judge", project_context, external_research=research_block)),
+        asyncio.create_task(_guarded_judge(run_presentation_judge, "Presentation Judge", project_context)),
     ]
 
+    eval_start = time.perf_counter()
+    logger.info("Evaluation pipeline started (concurrency=%d, attack_mode=%s, research=%s).", concurrency, attack_mode, bool(external_research))
+
+    await _notify_stage("Specialist Judges")
+    spec_start = time.perf_counter()
     try:
         innovation, technical, business, presentation = await asyncio.gather(*specialist_tasks)
+        spec_duration = time.perf_counter() - spec_start
+        logger.info("Specialist judges completed in %.2fs.", spec_duration)
     except Exception as exc:
+        spec_elapsed = time.perf_counter() - spec_start
+        logger.warning("Specialist judges execution failed after %.2fs: %s", spec_elapsed, exc)
+        abort_event.set()
         # Cancel running sibling tasks immediately so they do not consume worker threads or API quota
         for task in specialist_tasks:
             if not task.done():
@@ -436,15 +581,42 @@ async def run_all_judges(project_context: str, attack_mode: bool = False) -> dic
         await asyncio.gather(*specialist_tasks, return_exceptions=True)
         raise exc
 
+    if abort_event.is_set() or is_daily_quota_exhausted(configured_model):
+        raise asyncio.CancelledError("Evaluation aborted before consensus calculation")
+
     # Calculate consensus programmatically (no AI needed)
     consensus = calculate_consensus(innovation, technical, business, presentation)
 
-    # Chief judge synthesizes all results
-    chief = await run_chief_judge(
-        project_context, innovation, technical, business, presentation, attack_mode, consensus
-    )
+    if pacing_delay > 0:
+        await asyncio.sleep(pacing_delay)
 
-    return {
+    if abort_event.is_set() or is_daily_quota_exhausted(configured_model):
+        raise asyncio.CancelledError("Evaluation aborted before Chief Judge synthesis")
+
+    # Chief judge synthesizes all results
+    await _notify_stage("Chief Judge")
+    chief_start = time.perf_counter()
+    logger.info("Chief Judge synthesis started.")
+    try:
+        chief = await run_chief_judge(
+            project_context, innovation, technical, business, presentation,
+            attack_mode, consensus,
+            external_research=research_block,
+            abort_event=abort_event,
+        )
+        chief_duration = time.perf_counter() - chief_start
+        logger.info("Chief Judge synthesis completed in %.2fs.", chief_duration)
+    except Exception as exc:
+        chief_elapsed = time.perf_counter() - chief_start
+        logger.warning("Chief Judge synthesis failed after %.2fs: %s", chief_elapsed, exc)
+        abort_event.set()
+        raise exc
+
+    await _notify_stage("Completed")
+    total_duration = time.perf_counter() - eval_start
+    logger.info("Total evaluation pipeline completed successfully in %.2fs.", total_duration)
+
+    result = {
         "innovation": innovation,
         "technical": technical,
         "business": business,
@@ -452,3 +624,6 @@ async def run_all_judges(project_context: str, attack_mode: bool = False) -> dic
         "chief_judge": chief,
         "consensus": consensus,
     }
+    if external_research:
+        result["research_assisted"] = True
+    return result
