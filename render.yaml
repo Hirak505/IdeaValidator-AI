@@ -2,22 +2,18 @@ services:
   - type: web
     name: ideavalidator-api
     runtime: python
-    plan: starter
+    plan: free
     rootDir: backend
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /health
-    disk:
-      name: ideavalidator-data
-      mountPath: /var/data
-      sizeGB: 1
     envVars:
       - key: GEMINI_API_KEY
         sync: false
       - key: JWT_SECRET_KEY
         generateValue: true
       - key: DATABASE_PATH
-        value: /var/data/ideavalidator.db
+        value: /tmp/ideavalidator.db
       - key: ALLOWED_ORIGINS
         sync: false
       - key: ENVIRONMENT
