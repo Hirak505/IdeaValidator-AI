@@ -23,8 +23,9 @@ services:
       - key: ENVIRONMENT
         value: production
 
-  - type: static
+  - type: web
     name: ideavalidator-web
+    runtime: static
     rootDir: frontend
     buildCommand: npm ci && npm run build
     staticPublishPath: ./dist
